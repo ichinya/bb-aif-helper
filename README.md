@@ -12,6 +12,14 @@ BB plugin ID: `aif-chat`. Репозиторий: [ichinya/bb-aif-helper](https:
 
 ## Скриншоты
 
+Кнопка **AI Factory** закреплена в верхнем меню чата:
+
+![Кнопка AI Factory справа в заголовке чата BB](docs/screenshots/header-menu.png)
+
+После нажатия открывается постоянная панель справа. Переписка на кадре скрыта:
+
+![Верхнее меню чата с кнопкой AI Factory и открытая справа панель workflow](docs/screenshots/header-and-panel.png)
+
 Прогресс плана и следующие действия в карточке AI Factory:
 
 ![Карточка AI Factory: 8 из 8 задач отмечены, доступны проверка реализации и подготовка коммита](docs/screenshots/workflow-progress.png)
