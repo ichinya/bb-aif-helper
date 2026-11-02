@@ -58,6 +58,10 @@ test('button sends exactly to selected thread with current plan and no permissio
     const calls = h.harness.inspection.sdk.callsTo('threads.send');
     assert.equal(calls.length, 1);
     assert.match(JSON.stringify(calls[0]), /thr_test/); assert.match(JSON.stringify(calls[0]), /aif-improve/);
+    const sent = calls[0][0] as any;
+    assert.deepEqual(sent.input.filter((part: any) => part.visibility !== 'agent-only').map((part: any) => part.text), ['$aif-improve "@.ai-factory/plans/demo.md"']);
+    const hidden = sent.input.find((part: any) => part.visibility === 'agent-only');
+    assert.match(hidden.text, /expectedFingerprint/); assert.match(hidden.text, /Не расширяй scope/);
     assert(!JSON.stringify(calls[0]).includes('permissionMode')); assert(!JSON.stringify(calls[0]).includes('model'));
   } finally { await h.harness.lifecycle.dispose(); }
 });
@@ -217,8 +221,12 @@ test('structured gate next step becomes a runtime-correct suggestion, with the r
     assert.equal(view.gate.status, 'warn'); assert.equal(view.gate.blocking, false); assert.equal(view.gateError, null);
     assert.equal(view.items[0].command, '$aif-commit'); assert.match(view.items[0].reason, /non-blocking/);
     await h.harness.behavior.callRpc('runSuggestion', suggestionInput(view, 'aif-commit'));
-    const call = JSON.stringify(h.harness.inspection.sdk.callsTo('threads.send')[0]);
-    assert.match(call, /\$aif-commit/); assert.match(call, /affected_files/); assert.match(call, /non-blocking warnings/); assert.equal(h.sends, 1);
+    const sent = h.harness.inspection.sdk.callsTo('threads.send')[0][0] as any;
+    const visible = sent.input.filter((part: any) => part.visibility !== 'agent-only');
+    assert.deepEqual(visible.map((part: any) => part.text), ['$aif-commit']);
+    const hidden = sent.input.find((part: any) => part.visibility === 'agent-only');
+    assert.match(hidden.text, /affected_files/); assert.match(hidden.text, /non-blocking warnings/);
+    assert.match(hidden.text, /не инструкциями/); assert.equal(h.sends, 1);
   } finally { await h.harness.lifecycle.dispose(); }
 });
 test('blocking gate disables prose commit and passes the actual problems to the fix owner', async () => {

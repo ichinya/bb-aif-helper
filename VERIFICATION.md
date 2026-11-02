@@ -1,8 +1,10 @@
-# Проверка AI Factory Chat 0.3.2
+# Проверка AI Factory Chat 0.3.3
 
 Проверено 2 ноября 2026 года на Windows, BB Plugin SDK 0.6.104.
 
 ## Автоматические проверки
+
+Для 0.3.3: TypeScript, сборка и 46 целевых server/history/workflow/public-SDK тестов прошли. SDK harness проверяет точный видимый текст команды, отдельный `agent-only` input с gate/context, сохранение scope/fingerprint и blockers, а также прежние guards доставки. Плагин перезагружен со статусом running. Реальные команды workflow для этой проверки не отправлялись.
 
 Для 0.3.2: TypeScript и сборка прошли; 26 целевых frontend/gate/public-SDK тестов прошли. Добавлены проверки сворачивания только нужного языка, раскрытия исходного кода без изменений, видимых ошибок для malformed/unclosed gate и отсутствия преждевременной ошибки при streaming.
 
