@@ -1,11 +1,11 @@
-# Проверка AI Factory Chat 0.2.0
+# Проверка AI Factory Chat 0.3.0
 
 Проверено 2 ноября 2026 года на Windows, BB Plugin SDK 0.6.104.
 
 ## Автоматические проверки
 
 - TypeScript: `node node_modules/typescript/bin/tsc --noEmit`.
-- Fixture и SDK tests: `npm test` — 69 passed, 0 failed, 0 skipped.
+- Fixture и SDK tests: `npm test` — 83 passed, 0 failed, 0 skipped.
 - Public SDK import scan входит в tests; private BB dependencies не используются.
 - `bb plugin build .` создаёт server, app и self-contained host bundles.
 
@@ -22,6 +22,10 @@
 В 0.1.1 добавлены независимые от плана кнопки обновления AI Factory и запуска `aif`/`aif-analyze`. Тестами проверены отсутствие автоматического update, выбор analyze по установленному расширению, обнаружение custom skills, отсутствие аргумента плана у setup, запрет запуска отсутствующего skill, защита busy/pending и передача updater-запроса только в текущий чат. Версии установки включены в fingerprint карточки.
 
 ## Live-проверки
+
+В 0.3.0 добавлена обработка последнего завершающего `aif-gate-result`. Тесты покрывают WARN → commit, FAIL с blockers → fix, блокировку продвижения через предложения и workflow-карточку, последний/незакрытый/повреждённый блок, недопустимые команды, вложенные и цитируемые примеры, ошибочную семантику, отсутствие автоматического извлечения команд из JSON-полей, slash runtime и сохранение видимых проблем после скрытия кнопки.
+
+- `aif-chat@0.3.0` собран и перезагружен со статусом running. Реальный RPC прочитал последний ответ с gate `rules`, `status: warn`, `blocking: false`, двумя affected files и `suggested_next: /aif-rules`; вернул доступную кнопку `$aif-rules` с исходной причиной. В настоящем интерфейсе BB подтверждены тот же статус, причина и кнопка; кадр `docs/screenshots/gate-result.png` снят без RPC-фикстуры. Команды не отправлялись, источник ответа и файлы проекта не менялись.
 
 В 0.2.0 добавлен composer banner с командами из последнего ответа агента. Новые тесты проверяют разбор двух команд и повторов, отдельное скрытие и сохранение после reload, новый текст ответа, сохранение черновика, смену чата, отсутствие аргументов/окружающего текста в отправке, busy/pending/queue, stale answer/files, гонку смены ответа во время чтения проекта, duplicate/uncertain delivery и общий guard с workflow-карточкой.
 

@@ -189,3 +189,57 @@ test('a last answer changing during project inspection cannot dispatch an old co
     assert.equal(h.sends, 0);
   } finally { await h.harness.lifecycle.dispose(); }
 });
+
+const gateText = (patch: object = {}) => '```aif-gate-result\n' + JSON.stringify({ schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: ['src/demo.ts'], suggested_next: { command: '/aif-commit', reason: 'Only non-blocking warnings remain.' }, ...patch }) + '\n```';
+test('structured gate next step becomes a runtime-correct suggestion, with the reason and gate context', async () => {
+  const h = await setup(); try {
+    h.setOutput(gateText());
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(view.gate.status, 'warn'); assert.equal(view.gate.blocking, false); assert.equal(view.gateError, null);
+    assert.equal(view.items[0].command, '$aif-commit'); assert.match(view.items[0].reason, /non-blocking/);
+    await h.harness.behavior.callRpc('runSuggestion', suggestionInput(view, 'aif-commit'));
+    const call = JSON.stringify(h.harness.inspection.sdk.callsTo('threads.send')[0]);
+    assert.match(call, /\$aif-commit/); assert.match(call, /affected_files/); assert.match(call, /non-blocking warnings/); assert.equal(h.sends, 1);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('blocking gate disables prose commit and passes the actual problems to the fix owner', async () => {
+  const h = await setup(); try {
+    h.setOutput('$aif-commit\n' + gateText({ status: 'fail', blocking: true, blockers: [{ id: 'verify-1', severity: 'error', summary: 'Required implementation is missing.', file: 'src/demo.ts' }], suggested_next: { command: '/aif-fix', reason: 'Fix the blocking finding.' } }));
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(view.items.find((i: any) => i.id === 'aif-commit').available, false);
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view, 'aif-commit')));
+    assert.equal(h.sends, 0);
+    await h.harness.behavior.callRpc('runSuggestion', suggestionInput(view, 'aif-fix'));
+    assert.match(JSON.stringify(h.harness.inspection.sdk.callsTo('threads.send')[0]), /Required implementation is missing/);
+    const after = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(after.gate.blockers.length, 1); // hiding a command never removes gate findings
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('gate-only results remain visible without commands; invalid gate blocks a prose bypass', async () => {
+  const h = await setup(); try {
+    h.setOutput(gateText({ suggested_next: null }));
+    const only = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(only.items.length, 0); assert.equal(only.gate.status, 'warn');
+    h.setOutput('$aif-commit\n```aif-gate-result\ninvalid\n```');
+    const bad = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert(bad.gateError); assert.equal(bad.items[0].available, false);
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(bad, 'aif-commit'))); assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('slash runtimes retain slash invocation for a structured gate suggestion', async () => {
+  const h = await setup(); try {
+    h.value = { ...h.value, runtime: 'claude' }; h.setOutput(gateText());
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(view.items[0].command, '/aif-commit');
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('a blocking last-answer gate also stops advancing from a workflow card without blocking re-verification', async () => {
+  const h = await setup(); try {
+    h.value = { ...h.value, target: { ...h.value.target!, tasks: h.value.target!.tasks.map(t => ({ ...t, done: true })) } };
+    h.value.actions = workflowActions(h.value);
+    h.setOutput(gateText({ status: 'fail', blocking: true, blockers: [{ id: 'x', severity: 'error', summary: 'Must fix first.' }], suggested_next: { command: '/aif-fix', reason: 'Fix first.' } }));
+    await assert.rejects(h.harness.behavior.callRpc('run', { ...runInput(), actionId: 'commit' }));
+    assert.equal(h.sends, 0);
+    await h.harness.behavior.callRpc('run', { ...runInput(), actionId: 'check-verify' }); assert.equal(h.sends, 1);
+  } finally { await h.harness.lifecycle.dispose(); }
+});

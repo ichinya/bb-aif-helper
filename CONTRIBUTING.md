@@ -33,6 +33,7 @@ React и frontend SDK предоставляет BB. Не коммитьте `no
 - `reader.ts` — read-only чтение версий, metadata, skills, задач и отчётов.
 - `workflow.ts` — маршруты и запросы владельцам skills.
 - `suggestions.ts` — ограниченный разбор имён `$aif…` в последнем ответе агента; server RPC отвечает за проверку и доставку, composer banner — за показ и крестики.
+- `gate.ts` — разбор завершающего `aif-gate-result`, проверка семантики и допустимых рекомендаций; данные JSON не становятся произвольными командами.
 - `model.ts`, `contract.ts` — schemas и RPC-контракты.
 - `skills/aif-chat/SKILL.md` — инструкции агенту, CLI и просмотр CI.
 - `tests/` — fixtures, parser/routing tests, официальный SDK harness и проверка публичных импортов.

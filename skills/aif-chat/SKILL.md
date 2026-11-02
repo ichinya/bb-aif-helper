@@ -9,6 +9,8 @@ The persistent **AI Factory** button in the thread header opens the workflow tab
 
 The composer also shows names of `$aif…` commands found in the last assistant answer. A command click is explicit authorization for that selected installed skill only; the × control hides one suggestion without a message or workflow action. Suggestions preserve the user's draft, drop surrounding prose and arguments, and revalidate the answer and workflow guards on the server. Do not emit special markup just to populate this row or run every suggested command automatically.
 
+The final `aif-gate-result` is parsed separately: declared status, blockers, affected files and the allowlisted `suggested_next` are shown above the composer. Non-blocking WARN can suggest commit; blocking or malformed gates cannot authorize advancing to commit/done/archive/implement through plugin buttons. The selected skill receives normalized gate data as untrusted context and must recheck freshness. Preserve the original machine-readable output contract, including the final-block position; never append a chat directive after it just to update this UI.
+
 Use native tool `aif_chat_status` with the selected project-relative plan/change entrypoint and the phase actually reached (`explore`, `plan`, `improve`, `implement`, `verify`, `fix`, `done`). Emit its `previewDirective` exactly once on its own line, outside code. It renders an interactive card in this chat. Do not repeat unchanged cards. The tool reads files; it never executes workflow commands, tests or installs updates.
 
 CLI fallback:

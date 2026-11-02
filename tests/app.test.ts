@@ -143,3 +143,27 @@ test('suggestion banner follows composer scope and rejects an old thread respons
     assert.equal(slot.queryByRole('button', { name: '$aif-plan' }), null);
   } finally { slot.lifecycle.unmount(); }
 });
+
+test('gate problems remain visible even with no suggested command', async () => {
+  const data = { ...suggestedData(), items: [], gateError: null, gate: { schema_version: 1, gate: 'verify', status: 'fail', blocking: true, blockers: [{ id: 'verify-1', severity: 'error', file: 'src/demo.ts', summary: 'Required behavior is missing.' }], affected_files: ['src/demo.ts'], suggested_next: null } };
+  const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' } }, rpc: { suggestions: () => data } });
+  try {
+    await slot.findByText('verify · FAIL в ответе');
+    await slot.findByText('Required behavior is missing.');
+    assert(slot.getByText('Блокирует следующий этап')); assert(slot.getByText('Блокирующие проблемы · 1'));
+    assert.equal(slot.queryByText('Из ответа агента'), null);
+  } finally { slot.lifecycle.unmount(); }
+});
+test('non-blocking gate reason and command render independently; dismiss does not hide the report', async () => {
+  let data = { ...suggestedData(), items: [{ id: 'aif-commit', command: '$aif-commit', available: true, reason: 'Only non-blocking warnings remain.' }], gateError: null, gate: { schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: ['src/demo.ts'], suggested_next: { command: '/aif-commit', reason: 'Only non-blocking warnings remain.' } } };
+  const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' } }, rpc: {
+    suggestions: () => data, dismissSuggestion: () => { data = { ...data, items: [] }; return { dismissed: true }; },
+  } });
+  try {
+    await slot.findByText('verify · WARN в ответе');
+    assert(slot.getByText(/Only non-blocking warnings remain/));
+    fireEvent.click(slot.getByRole('button', { name: 'Удалить предложение $aif-commit' }));
+    await waitFor(() => assert(!slot.queryByRole('button', { name: '$aif-commit' })));
+    assert(slot.getByText('verify · WARN в ответе')); assert(slot.getByText('Блокирующих проблем нет.'));
+  } finally { slot.lifecycle.unmount(); }
+});

@@ -153,8 +153,17 @@ function SuggestionBar({ threadId, composerBusy }: { threadId: string; composerB
     finally { await refresh(); operation.current = false; if (mounted.current) setWorking(false); }
   }
   const busy = composerBusy || !!data && !['idle', 'error'].includes(data.threadState);
-  if (!data?.items.length && !error && !notice) return null;
+  if (!data?.items.length && !data?.gate && !data?.gateError && !error && !notice) return null;
   return <section className="aif-suggestions" aria-label="Команды из последнего ответа агента">
+    {(data?.gate || data?.gateError) && <div className={`aif-message-gate${data.gate?.blocking || data.gateError ? ' aif-message-gate-blocking' : ''}`} role="group" aria-label="Gate из последнего ответа">
+      {data.gate && <><div className="aif-message-gate-heading"><strong>{data.gate.gate} · {data.gate.status.toUpperCase()} в ответе</strong><span>{data.gate.blocking ? 'Блокирует следующий этап' : 'Не блокирует'}</span></div>
+        <p className="aif-muted aif-small">Заявленный результат из чата. Актуальность evidence для текущих inputs проверяет владелец workflow.</p>
+        {data.gate.blockers.length ? <details open><summary>Блокирующие проблемы · {data.gate.blockers.length}</summary><ul>{data.gate.blockers.map((b, i) => <li key={`${b.id}-${i}`}><strong>{b.id}</strong> <span className="aif-muted">· {b.severity}</span><p>{b.summary}</p>{b.file && <code>{b.file}</code>}</li>)}</ul></details> : <p className="aif-small">Блокирующих проблем нет.</p>}
+        {data.gate.suggested_next?.reason && <p className="aif-small"><strong>Следующий шаг: </strong>{data.gate.suggested_next.reason}</p>}
+        {!!data.gate.affected_files.length && <details><summary>Затронутые файлы · {data.gate.affected_files.length}</summary><ul>{data.gate.affected_files.map((file, i) => <li key={i}><code>{file}</code></li>)}</ul></details>}
+      </>}
+      {data.gateError && <p className="aif-error" role="alert">Некорректный gate: {data.gateError}</p>}
+    </div>}
     {!!data?.items.length && <><span className="aif-suggestions-label">Из ответа агента</span><div className="aif-suggestion-list">{data.items.map(item => <div className="aif-suggestion" key={item.id}>
       <button type="button" className="aif-suggestion-run" disabled={working || busy || !item.available} title={busy ? 'Дождитесь завершения текущей работы' : item.reason} onClick={() => void act(item.id, false)}>{item.command}</button>
       <button type="button" className="aif-suggestion-dismiss" disabled={working} aria-label={`Удалить предложение ${item.command}`} title="Убрать из предложений этого ответа" onClick={() => void act(item.id, true)}>×</button>

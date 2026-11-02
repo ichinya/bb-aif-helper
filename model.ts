@@ -44,8 +44,18 @@ export const suggestionRequestSchema = z.object({ threadId: z.string().min(1).ma
 export const suggestionActionSchema = suggestionRequestSchema.extend({
   sourceKey: z.string().length(64), commandId: z.string().max(100).regex(/^aif(?:-[a-z0-9]+)*$/),
 }).strict();
+export const gateResultSchema = z.object({
+  schema_version: z.literal(1), gate: z.enum(['verify', 'review', 'security', 'rules']),
+  status: z.enum(['pass', 'warn', 'fail']), blocking: z.boolean(),
+  blockers: z.array(z.object({ id: z.string().min(1).max(200), severity: z.enum(['error', 'warning']),
+    file: z.string().max(1000).nullable().optional(), summary: z.string().min(1).max(2000) })).max(100),
+  affected_files: z.array(z.string().max(1000)).max(200),
+  suggested_next: z.object({ command: z.string().max(150).nullable(), reason: z.string().max(2000).nullable() }).nullable().default(null),
+});
+export type GateResult = z.infer<typeof gateResultSchema>;
 export const suggestionsSchema = z.object({
   sourceKey: z.string(), fingerprint: z.string(), threadState: z.string(),
+  gate: gateResultSchema.nullable().default(null), gateError: z.string().nullable().default(null),
   items: z.array(z.object({ id: z.string(), command: z.string(), available: z.boolean(), reason: z.string() })),
 });
 export type Suggestions = z.infer<typeof suggestionsSchema>;
