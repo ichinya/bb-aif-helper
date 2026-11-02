@@ -1,11 +1,13 @@
-# Проверка AI Factory Chat 0.3.1
+# Проверка AI Factory Chat 0.3.2
 
 Проверено 2 ноября 2026 года на Windows, BB Plugin SDK 0.6.104.
 
 ## Автоматические проверки
 
+Для 0.3.2: TypeScript и сборка прошли; 26 целевых frontend/gate/public-SDK тестов прошли. Добавлены проверки сворачивания только нужного языка, раскрытия исходного кода без изменений, видимых ошибок для malformed/unclosed gate и отсутствия преждевременной ошибки при streaming.
+
 - TypeScript: `node node_modules/typescript/bin/tsc --noEmit`.
-- Fixture и SDK tests: `npm test` — 89 passed, 0 failed, 0 skipped.
+- Полный fixture и SDK suite для 0.3.1: `npm test` — 89 passed, 0 failed, 0 skipped.
 - Public SDK import scan входит в tests; private BB dependencies не используются.
 - `bb plugin build .` создаёт server, app и self-contained host bundles.
 
@@ -22,6 +24,8 @@
 В 0.1.1 добавлены независимые от плана кнопки обновления AI Factory и запуска `aif`/`aif-analyze`. Тестами проверены отсутствие автоматического update, выбор analyze по установленному расширению, обнаружение custom skills, отсутствие аргумента плана у setup, запрет запуска отсутствующего skill, защита busy/pending и передача updater-запроса только в текущий чат. Версии установки включены в fingerprint карточки.
 
 ## Live-проверки
+
+В 0.3.2 на настоящих сообщениях BB подтверждены свёрнутые строки `Данные gate · verify · WARN` и `Данные gate · rules · WARN`. Раскрытие и повторное сворачивание rules сохраняют исходный JSON без изменений; секция проверок продолжает показывать два результата из истории. Плагин установлен и running. Сообщения и workflow-команды не отправлялись.
 
 В 0.3.1 проверены восстановление verify WARN из истории, независимое сохранение последующего rules, точная и неоднозначная привязка к планам, очистка scope следующим запросом, отсутствие подмены файлового evidence, ошибки gate, вложенные messages, UI, сохранение после reload и изоляция сохранённых результатов по checkout. SDK stub ограничивает страницу 100 событиями, как установленный BB.
 

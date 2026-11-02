@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { definePluginApp, useRpc, useRealtime, useComposer, type PluginMessageDirectiveProps, type ExperimentalThreadContextCardProps, type ExperimentalThreadTabProps } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, useRpc, useRealtime, useComposer, type PluginMessageDirectiveProps, type ExperimentalThreadContextCardProps, type ExperimentalThreadTabProps, type ExperimentalCodeFenceRendererProps } from '@get-bb/plugin-sdk/app';
 import type { rpcContract } from './contract.ts';
 import { phaseSchema, type Snapshot, type Phase, type Action, type Suggestions } from './model.ts';
+import { parseReplyGate } from './gate.ts';
 import './aif-chat.css';
 
 const phaseNames: Record<Phase, string> = { unknown: 'Контекст задачи', explore: 'Исследование', plan: 'Планирование', improve: 'Уточнение плана', implement: 'Выполнение плана', verify: 'Проверка', fix: 'Исправление замечаний', done: 'Финализация' };
 const profileNames: Record<Snapshot['profile'], string> = { none: 'Нет установки', upstream: 'AI Factory', 'aifhub-classic': 'AIFHub · classic', 'aifhub-openspec': 'AIFHub · OpenSpec', 'aifhub-ultra': 'AIFHub · legacy ultra', invalid: 'Проверьте конфигурацию' };
 const checkLabels = { notrun: 'Нет evidence', 'reported-pass': 'PASS в отчёте', warn: 'С замечаниями', fail: 'Ошибка', unknown: 'Не подтверждено' };
+
+function GateData({ code, status, Original }: ExperimentalCodeFenceRendererProps) {
+  const parsed = status === 'closed' ? parseReplyGate(`\`\`\`aif-gate-result\n${code}\n\`\`\``) : null;
+  const error = status === 'unclosed' ? 'Блок aif-gate-result не закрыт; результат не подтверждён.' : parsed?.error;
+  const gate = parsed && !error ? parsed.gate : null;
+  return <div className="aif-gate-data">
+    {error && <p className="aif-error" role="alert">Некорректный gate: {error}</p>}
+    <details><summary>Данные gate{gate ? ` · ${gate.gate} · ${gate.status.toUpperCase()}` : status === 'streaming' ? ' · формируются…' : ' · проверить JSON'}</summary>
+      <Original />
+    </details>
+  </div>;
+}
 
 function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFile, compact = false }: {
   threadId: string; initialTarget?: string; phase?: Phase; openFile?: ((path: string) => boolean) | null; compact?: boolean;
@@ -177,6 +190,7 @@ function SuggestionBar({ threadId, composerBusy }: { threadId: string; composerB
   </section>;
 }
 export default definePluginApp(app => {
+  app.slots.experimental_codeFenceRenderer({ id: 'gate-data', languages: ['aif-gate-result'], component: GateData });
   app.composer.customize({ id: 'suggested-commands', scopes: ['thread'], banners: [{ id: 'commands', chrome: 'bare', component: SuggestedCommands }] });
   app.slots.messageDirective({ id: 'aif-chat', component: Directive });
   app.slots.experimental_threadContextCardSection({ id: 'workflow', title: 'AI Factory', group: '9_aif', order: 10, component: ContextCard });

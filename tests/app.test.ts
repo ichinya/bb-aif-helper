@@ -16,6 +16,39 @@ const app = await loadPluginApp(() => import('../app.tsx'));
 const props = { attributes: { phase: 'plan' }, source: '::aif-chat{phase="plan"}', message: { id: 'msg_1', threadId: 'thr_test', turnId: 'turn_1', projectId: 'proj_test' }, openWorkspaceFile: null };
 function data() { const s = snapshot(); s.actions = workflowActions(s); return s; }
 
+test('only gate JSON gets a collapsed renderer; original code remains available unchanged', () => {
+  const renderer = app.codeFenceRenderers.find(r => r.id === 'gate-data')!;
+  assert.deepEqual(renderer.languages, ['aif-gate-result']);
+  const code = JSON.stringify({ schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: [], suggested_next: null }, null, 2);
+  const slot = renderSlot(renderer, { code, language: 'aif-gate-result', status: 'closed', index: 0, message: props.message, Original: () => code });
+  try {
+    const summary = slot.getByText('Данные gate · verify · WARN');
+    const details = summary.closest('details')!;
+    assert.equal(details.open, false); assert(details.textContent?.includes(code));
+    fireEvent.click(summary); assert.equal(details.open, true);
+    assert.equal(slot.queryByRole('alert'), null);
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test('malformed and interrupted gate failures remain visible outside collapsed JSON', () => {
+  const renderer = app.codeFenceRenderers.find(r => r.id === 'gate-data')!;
+  for (const [code, status, expected] of [['{bad', 'closed', /некорректный JSON/], ['{', 'unclosed', /не закрыт/]] as const) {
+    const slot = renderSlot(renderer, { code, status, language: 'aif-gate-result', index: 0, message: props.message, Original: () => code });
+    try {
+      const alert = slot.getByRole('alert'); assert.match(alert.textContent!, expected); assert(!alert.closest('details'));
+      assert.equal(slot.getByText('Данные gate · проверить JSON').closest('details')!.open, false);
+    } finally { slot.lifecycle.unmount(); }
+  }
+});
+
+test('streaming partial gate stays collapsed without a premature JSON error', () => {
+  const slot = renderSlot(app.codeFenceRenderers[0], { code: '{', status: 'streaming', language: 'aif-gate-result', index: 0, message: props.message, Original: () => '{' });
+  try {
+    assert.equal(slot.getByText('Данные gate · формируются…').closest('details')!.open, false);
+    assert.equal(slot.queryByRole('alert'), null);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('checks distinguish completed chat WARN from missing file evidence', async () => {
   const s = data(); s.checks = [{ id: 'verify', label: 'Соответствие плану', state: 'notrun', detail: 'Unknown launch', path: null, required: false,
     chat: { seq: 12, at: '2026-11-02T12:00:00Z', target: s.target!.path, freshness: 'unknown',
