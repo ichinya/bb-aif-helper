@@ -202,6 +202,16 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
   } catch { s.profile = 'invalid'; s.diagnostics.push('Не удалось разобрать конфигурацию проекта. Действия отключены.'); }
   const installs = Array.isArray(meta.agents) ? meta.agents : meta.agent ? [{ id: meta.agent, skillsDir: meta.skillsDir, installedSkills: meta.installedSkills }] : [];
   let agent = installs.find((v: any) => v.id === input.runtime);
+  // AI Factory can register the shared .agents/skills target as codex or universal,
+  // while BB exposes the same Codex installation as codex-app. Prefer exact IDs;
+  // never borrow another runtime's private skill directory.
+  if (!agent && ['codex', 'codex-app'].includes(input.runtime)) {
+    const sibling = input.runtime === 'codex-app' ? 'codex' : 'codex-app';
+    const shared = installs.filter((v: any) => [sibling, 'universal'].includes(v.id)
+      && str(v.skillsDir)?.replaceAll('\\', '/') === '.agents/skills');
+    agent = shared.find((v: any) => v.id === sibling) ?? shared.find((v: any) => v.id === 'universal');
+    if (agent) s.diagnostics.push(`Для ${input.runtime} используется общая установка ${agent.id} в .agents/skills.`);
+  }
   if (!agent && installs.length === 1) { agent = installs[0]; s.runtime = String(agent.id); }
   if (!agent && installs.length > 1) s.diagnostics.push('Для текущего runtime установка не найдена: выберите runtime в настройках плагина.');
   const requestedSkills = Array.isArray(agent?.installedSkills) ? agent.installedSkills.filter((v: unknown) => typeof v === 'string') : [];

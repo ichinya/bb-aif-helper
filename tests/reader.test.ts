@@ -74,6 +74,63 @@ test('AIFHub analyze is discovered from installed custom skills outside base ins
     assert.equal(action.command, '$aif-analyze'); assert(action.available);
   } finally { await f.cleanup(); }
 });
+
+test('BB codex-app resolves shared codex skills when other runtimes are installed', async () => {
+  const f = await fixture(true); try {
+    const file = path.join(f.root, '.ai-factory.json');
+    const meta = JSON.parse(await fs.readFile(file, 'utf8'));
+    meta.agents[0].id = 'codex';
+    meta.agents.push({ id: 'copilot', skillsDir: '.github/skills', installedSkills: ['aif-plan'] });
+    await f.write('.ai-factory.json', meta);
+    await f.write('.ai-factory/extensions/aifhub-extension/extension.json', { name: 'aifhub-extension', version: '1.8.1', skills: ['skills/aif-analyze'] });
+    await f.write('.agents/skills/aif-analyze/SKILL.md', '# Analyze fixture');
+    const s = await collectSnapshot(input(f.root));
+    assert.equal(s.runtime, 'codex-app');
+    assert(s.skills.includes('aif-plan')); assert(s.skills.includes('aif-explore')); assert(s.skills.includes('aif-analyze'));
+    assert.equal(s.actions.find(a => a.id === 'setup-context')?.available, true);
+    assert(!s.diagnostics.some(d => d.includes('установка не найдена')));
+    await fs.unlink(path.join(f.root, '.agents/skills/aif-analyze/SKILL.md'));
+    const missing = await collectSnapshot(input(f.root));
+    assert.equal(missing.actions.find(a => a.id === 'setup-context')?.available, false);
+    assert.notEqual(missing.fingerprint, s.fingerprint);
+  } finally { await f.cleanup(); }
+});
+
+test('exact runtime installation wins over a compatible shared Codex record', async () => {
+  const f = await fixture(); try {
+    await f.write('.ai-factory.json', { version: '2.21.0', agents: [
+      { id: 'codex', skillsDir: '.agents/skills', installedSkills: ['aif-plan'] },
+      { id: 'codex-app', skillsDir: '.agents/skills', installedSkills: ['aif-explore'] },
+    ] });
+    const s = await collectSnapshot(input(f.root));
+    assert.deepEqual(s.skills, ['aif-explore']);
+  } finally { await f.cleanup(); }
+});
+
+test('shared universal profile works for both Codex runtime IDs', async () => {
+  const f = await fixture(); try {
+    await f.write('.ai-factory.json', { version: '2.21.0', agents: [
+      { id: 'universal', skillsDir: '.agents\\skills', installedSkills: ['aif-plan'] },
+      { id: 'copilot', skillsDir: '.github/skills', installedSkills: ['aif-explore'] },
+    ] });
+    for (const runtime of ['codex-app', 'codex']) {
+      const s = await collectSnapshot({ ...input(f.root), runtime });
+      assert(s.skills.includes('aif-plan'));
+    }
+  } finally { await f.cleanup(); }
+});
+
+test('Codex app does not borrow private codex or copilot paths in a multi-runtime project', async () => {
+  const f = await fixture(); try {
+    await f.write('.ai-factory.json', { version: '2.21.0', agents: [
+      { id: 'codex', skillsDir: '.codex/skills', installedSkills: ['aif-plan'] },
+      { id: 'copilot', skillsDir: '.agents/skills', installedSkills: ['aif-explore'] },
+    ] });
+    await f.write('.codex/skills/aif-plan/SKILL.md', '# Private Codex CLI skill');
+    const s = await collectSnapshot(input(f.root));
+    assert.deepEqual(s.skills, []); assert(s.diagnostics.some(d => d.includes('установка не найдена')));
+  } finally { await f.cleanup(); }
+});
 test('OpenSpec chooses tasks.md; existing directories alone do not activate native mode', async () => {
   const f = await fixture(true, true); try {
     await f.write('openspec/changes/demo/tasks.md', '# Tasks\n- [ ] 1 Work');

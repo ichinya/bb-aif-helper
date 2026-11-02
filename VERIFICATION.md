@@ -1,11 +1,11 @@
-# Проверка AI Factory Chat 0.1.2
+# Проверка AI Factory Chat 0.1.3
 
 Проверено 2 ноября 2026 года на Windows, BB Plugin SDK 0.6.104.
 
 ## Автоматические проверки
 
 - TypeScript: `node node_modules/typescript/bin/tsc --noEmit`.
-- Fixture и SDK tests: `npm test` — 51 passed, 0 failed, 0 skipped.
+- Fixture и SDK tests: `npm test` — 55 passed, 0 failed, 0 skipped.
 - Public SDK import scan входит в tests; private BB dependencies не используются.
 - `bb plugin build .` создаёт server, app и self-contained host bundles.
 
@@ -22,6 +22,10 @@
 В 0.1.1 добавлены независимые от плана кнопки обновления AI Factory и запуска `aif`/`aif-analyze`. Тестами проверены отсутствие автоматического update, выбор analyze по установленному расширению, обнаружение custom skills, отсутствие аргумента плана у setup, запрет запуска отсутствующего skill, защита busy/pending и передача updater-запроса только в текущий чат. Версии установки включены в fingerprint карточки.
 
 ## Live-проверки
+
+В 0.1.3 исправлен выбор общей установки Codex: при BB runtime `codex-app` и нескольких записях проекта (`codex`, `copilot`) skills из `.agents/skills` больше не считаются отсутствующими. Тесты подтверждают приоритет точного runtime, поддержку shared universal, отсутствие подстановки приватных каталогов и отключение команды после удаления её `SKILL.md`.
+
+- `aif-chat@0.1.3` собран и перезагружен со статусом running. Повторный read-only status через настоящий host worker в проекте с общей установкой обнаружил 31 skill; `setup-context` возвращает `$aif-analyze` с `available: true`. Команда не отправлялась, файлы проверяемого проекта не менялись.
 
 В 0.1.2 добавлены постоянная кнопка в заголовке и fixed-вкладка AI Factory справа. SDK harness проверяет маршрут открытия панели без отправки команд и чтение данных принадлежащего панели thread. Контроль запуска workflow и обновления остаётся общим с карточкой.
 

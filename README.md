@@ -4,7 +4,7 @@
 
 Плагин добавляет кнопку **AI Factory** в заголовок чата и открывает панель справа. Версии, установленные расширения, действия workflow и задачи плана доступны без поиска сообщений в ленте.
 
-Версия: **0.1.2** · Статус: **experimental** · Интерфейс: **русский**.
+Версия: **0.1.3** · Статус: **experimental** · Интерфейс: **русский**.
 
 BB plugin ID: `aif-chat`. Репозиторий: [ichinya/bb-aif-helper](https://github.com/ichinya/bb-aif-helper).
 
@@ -115,4 +115,4 @@ Fixture-тесты проверяют маршруты, испорченные m
 
 Проверенная среда: Windows, BB 0.48.1, SDK 0.6.104, Node.js 24.13.0. Другие ОС отдельно не проверены. GitHub-запросы используют публичные endpoints без токена; закрытый upstream и превышение лимитов API могут приводить к ошибке проверки версии.
 
-Подробности: [разработка](CONTRIBUTING.md) и [отчёт проверки 0.1.2](VERIFICATION.md). Публикация в npm или BB Community Marketplace не выполнялась. Ошибки и предложения: [GitHub Issues](https://github.com/ichinya/bb-aif-helper/issues).
+Подробности: [разработка](CONTRIBUTING.md) и [отчёт проверки 0.1.3](VERIFICATION.md). Публикация в npm или BB Community Marketplace не выполнялась. Ошибки и предложения: [GitHub Issues](https://github.com/ichinya/bb-aif-helper/issues).
