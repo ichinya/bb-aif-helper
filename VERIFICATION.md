@@ -1,8 +1,10 @@
-# Проверка AI Factory Chat 0.5.2
+# Проверка AI Factory Chat 0.6.0
 
 Проверено 2 ноября 2026 года на Windows, BB Plugin SDK 0.6.104.
 
 ## Автоматические проверки
+
+Для 0.6.0: 93 профильных теста, TypeScript и сборка прошли. Проверены новая maintenance-кнопка, invalid profile с расширением, последовательность обоих updater prompts, остановка при ошибке ядра, корректная singular-команда в видимом сообщении и приватный контекст prerequisites. Контракт CLI сверен по `src/cli/index.ts`, `commands/update.ts`, `commands/extension.ts` и официальной документации AI Factory. Реальные обновления AI Factory/расширений ради теста не запускались.
 
 Для 0.5.2: 90 профильных тестов, TypeScript и сборка прошли. Проверены сохранение updater при invalid profile, отсутствие обычных workflow/setup actions, отображение активной кнопки в UI и guarded updater dispatch в SDK harness. Испорченные YAML/extension fixtures остаются invalid, но возвращают только действие обновления установки.
 

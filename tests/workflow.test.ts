@@ -93,6 +93,24 @@ test('update prompt separates package update from project refresh and preserves 
   assert.match(prompt, /npm link/); assert.match(prompt, /не используй --force/);
   assert.match(prompt, /после обновления CLI заново выполни ai-factory update/i);
 });
+
+test('both update actions order core, project, extensions and verification and stop on a core failure', () => {
+  const s = snapshot({ profile: 'invalid', extensions: [{ name: 'aifhub-extension', recordedVersion: '1.7.1', installedVersion: '1.7.1', source: 'local', state: 'present', contributions: [] }] });
+  const actions = workflowActions(s);
+  assert.deepEqual(actions.map(a => a.id), ['update-factory', 'update-extensions']);
+  assert.equal(actions[1].command, 'ai-factory extension update');
+  for (const action of actions) {
+    const prompt = actionPrompt(s, action);
+    const stages = ['1. AI Factory CLI.', '2. Установка проекта.', '3. Расширения после AI Factory.', '4. Проверка результата.'].map(stage => prompt.indexOf(stage));
+    assert(stages.every((index, i) => index >= 0 && (!i || index > stages[i - 1])));
+    assert.match(prompt, /Если обновление CLI или базовой установки не удалось\/не подтверждено, остановись/);
+    assert.match(prompt, /выполни ai-factory extension update —/);
+    assert.match(prompt, /ai-factory extension list/);
+    assert.match(prompt, /extension.json/); assert.match(prompt, /SKILL.md/);
+    assert.match(prompt, /skipped\/failed/); assert.match(prompt, /не запускай init или обновление расширений/);
+  }
+  assert(!workflowActions(snapshot()).some(a => a.id === 'update-extensions'));
+});
 test('setup action does not pass the selected plan as an aif argument', () => {
   const s = snapshot(); const a = workflowActions(s).find(a => a.id === 'setup-context')!;
   assert.equal(a.command, '$aif'); assert(!actionPrompt(s, a).includes(s.target!.path));

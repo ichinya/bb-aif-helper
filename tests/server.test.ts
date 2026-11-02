@@ -221,6 +221,20 @@ test('update button sends a maintenance request to the current thread without ru
   } finally { await h.harness.lifecycle.dispose(); }
 });
 
+test('extension update dispatch uses the supported command and includes ordered core prerequisites privately', async () => {
+  const h = await setup(); try {
+    h.value.extensions = [{ name: 'aifhub-extension', recordedVersion: '1.7.1', installedVersion: '1.7.1', source: 'local', state: 'present', contributions: [] }];
+    h.value.profile = 'invalid';
+    await h.harness.behavior.callRpc('run', { ...runInput(), actionId: 'update-extensions' });
+    const sent = h.harness.inspection.sdk.callsTo('threads.send')[0][0] as any;
+    assert.equal(sent.input[0].text, 'ai-factory extension update');
+    assert.equal(sent.input[1].visibility, 'agent-only');
+    assert.match(sent.input[1].text, /npm install -g ai-factory@latest/);
+    assert.match(sent.input[1].text, /3\. Расширения после AI Factory/);
+    assert.equal(h.sends, 1);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
 function suggestionInput(view: any, commandId = 'aif-plan') {
   return { threadId: 'thr_test', sourceKey: view.sourceKey, fingerprint: view.fingerprint, commandId, requestId: randomUUID() };
 }

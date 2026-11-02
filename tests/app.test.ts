@@ -27,6 +27,15 @@ test('configuration errors do not hide the installation update button', async ()
   } finally { slot.lifecycle.unmount(); }
 });
 
+test('registered extensions have a separate update button even with an invalid selected plan', async () => {
+  const s = snapshot({ profile: 'invalid', extensions: [{ name: 'aifhub-extension', recordedVersion: '1.7.1', installedVersion: '1.7.1', source: 'local', state: 'present', contributions: [] }] }); s.actions = workflowActions(s);
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s } });
+  try {
+    assert.equal((await slot.findByRole('button', { name: 'Обновить расширения' }) as HTMLButtonElement).disabled, false);
+    assert.equal(slot.queryByRole('button', { name: 'Выполнить план' }), null);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('saved-data state is visible and the refresh button explicitly bypasses the cache', async () => {
   const s = data(); s.cache = { source: 'saved', refreshing: true, refreshError: false };
   const requests: any[] = [];

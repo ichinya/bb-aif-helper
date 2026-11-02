@@ -42,7 +42,7 @@ test('scalar YAML and malformed tools mapping cannot enable a workflow', async (
   assert.throws(() => parseYaml('true'));
   const f = await fixture(true); try {
     await f.write('.ai-factory/config.yaml', 'aifhub:\n  tools: true\n');
-    const s = await collectSnapshot(input(f.root)); assert.equal(s.profile, 'invalid'); assert.deepEqual(s.actions.map(a => a.id), ['update-factory']);
+    const s = await collectSnapshot(input(f.root)); assert.equal(s.profile, 'invalid'); assert(s.actions.some(a => a.id === 'update-factory')); assert(s.actions.every(a => a.group === 'maintenance'));
   } finally { await f.cleanup(); }
 });
 test('code samples, comments and frontmatter do not manufacture tasks', () => {
@@ -87,7 +87,7 @@ test('extension source modules are never imported during status discovery', asyn
 test('mismatched extension metadata disables routing instead of treating it as upstream', async () => {
   const f = await fixture(true); try {
     await f.write('.ai-factory/extensions/aifhub-extension/extension.json', { name: 'aifhub-extension', version: '9.0.0' });
-    const s = await collectSnapshot(input(f.root)); assert.equal(s.profile, 'invalid'); assert.deepEqual(s.actions.map(a => a.id), ['update-factory']);
+    const s = await collectSnapshot(input(f.root)); assert.equal(s.profile, 'invalid'); assert.deepEqual(s.actions.map(a => a.id), ['update-factory', 'update-extensions']);
   } finally { await f.cleanup(); }
 });
 test('AIFHub analyze is discovered from installed custom skills outside base installedSkills', async () => {
