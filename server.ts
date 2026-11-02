@@ -1,0 +1,157 @@
+import type { BbPluginApi } from '@get-bb/plugin-sdk';
+import { z } from 'zod';
+import { hostContract, rpcContract } from './contract.ts';
+import { requestSchema, phaseSchema, type CardRequest, type Snapshot, type Phase } from './model.ts';
+import { actionPrompt } from './workflow.ts';
+export { rpcContract } from './contract.ts';
+type Selection = { environmentId: string; target: string; phase: Phase };
+type Delivery = { requestId: string; fingerprint: string; actionId: string; state: 'attempting' | 'sent' | 'uncertain'; at: number };
+export function cardDirective(request: { target?: string; phase?: Phase }): string {
+  const attrs = [request.target ? `target=${JSON.stringify(request.target)}` : '', request.phase && request.phase !== 'unknown' ? `phase=${JSON.stringify(request.phase)}` : ''].filter(Boolean).join(' ');
+  return `::aif-chat{${attrs}}`;
+}
+export default async function plugin(bb: BbPluginApi) {
+  const settings = bb.settings.define({
+    enabled: { type: 'boolean', label: 'Карточки AI Factory в чате', default: true },
+    sourceRepo: { type: 'string', label: 'Путь к исходникам AI Factory на хосте (необязательно)', default: '' },
+    runtime: { type: 'select', label: 'Runtime установки проекта', options: ['auto', 'codex', 'codex-app', 'claude', 'cursor', 'opencode', 'gemini'], default: 'auto' },
+    upstreamRepo: { type: 'string', label: 'GitHub upstream AI Factory', default: 'lee-to/ai-factory', experimental_schema: z.string().regex(/^[\w.-]+\/[\w.-]+$/) },
+    upstreamRef: { type: 'string', label: 'Upstream ref (пусто — последний стабильный release)', default: '', experimental_schema: z.string().max(200) },
+  });
+  const host = bb.hosts.experimental_client({ contract: hostContract });
+  let enabled = (await settings.get()).enabled;
+  settings.onChange(next => { enabled = next.enabled; });
+  const queues = new Map<string, Promise<unknown>>();
+  const cache = new Map<string, { at: number; value: Snapshot }>();
+  async function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const current = (queues.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
+    queues.set(key, current);
+    try { return await current; } finally { if (queues.get(key) === current) queues.delete(key); }
+  }
+  async function context(threadId: string) {
+    const thread = await bb.sdk.threads.get({ threadId });
+    if (!thread.environmentId) throw new Error('У чата нет рабочей среды.');
+    const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+    if (environment.status !== 'ready' || environment.lifecycle.phase !== 'active' || !environment.path) throw new Error('Рабочая среда недоступна.');
+    if (environment.projectId !== thread.projectId) throw new Error('Среда не соответствует проекту чата.');
+    return { thread, environment };
+  }
+  async function status(input: CardRequest, checkUpdates = false, fresh = false): Promise<Snapshot> {
+    const config = await settings.get();
+    if (!config.enabled) throw new Error('Карточки отключены в настройках плагина.');
+    const { thread, environment } = await context(input.threadId);
+    const saved = await bb.storage.kv.get<Selection>(`selection:${input.threadId}`);
+    const selection = saved?.environmentId === environment.id ? saved : undefined;
+    const target = input.target || selection?.target || '';
+    const phase = input.phase === 'unknown' ? selection?.phase ?? input.phase : input.phase;
+    const runtime = config.runtime === 'auto' ? thread.providerId === 'codex' ? 'codex-app' : thread.providerId : config.runtime;
+    const key = JSON.stringify([input.threadId, environment.id, environment.path, environment.hostId, target, phase, runtime, config.sourceRepo, config.upstreamRepo, config.upstreamRef]);
+    const cached = cache.get(key);
+    let snapshot: Snapshot;
+    if (!fresh && !checkUpdates && cached && Date.now() - cached.at < 2000) snapshot = structuredClone(cached.value);
+    else {
+      snapshot = await host.call('collect', { root: environment.path!, target, phase, runtime, sourceRepo: config.sourceRepo,
+        checkUpdates, upstreamRepo: config.upstreamRepo, upstreamRef: config.upstreamRef }, { hostId: environment.hostId });
+      const remoteKey = `upstream:${environment.hostId}:${config.upstreamRepo}:${config.upstreamRef}`;
+      if (checkUpdates) await bb.storage.kv.set(remoteKey, snapshot.upstream);
+      else snapshot.upstream = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey) ?? snapshot.upstream;
+      if (cache.size > 100) cache.clear();
+      cache.set(key, { at: Date.now(), value: structuredClone(snapshot) });
+    }
+    snapshot.threadState = thread.runtime.displayStatus;
+    try {
+      snapshot.pendingQuestions = (await bb.sdk.threads.interactions.list({ threadId: input.threadId })).length;
+      if (snapshot.pendingQuestions > 0) snapshot.threadState = 'awaiting_input';
+    } catch { snapshot.pendingQuestions = null; }
+    return snapshot;
+  }
+  async function show(input: CardRequest) {
+    const { environment } = await context(input.threadId);
+    const snapshot = await status(input, false, true);
+    await bb.storage.kv.set(`selection:${input.threadId}`, { environmentId: environment.id, target: input.target, phase: input.phase } satisfies Selection);
+    bb.realtime.publish('changed', { threadId: input.threadId });
+    return { snapshot, previewDirective: cardDirective({ target: snapshot.target?.path ?? input.target, phase: input.phase }) };
+  }
+  bb.rpc.register(rpcContract, {
+    status: input => status(input, input.checkUpdates),
+    run: input => serial(input.threadId, async () => {
+      const deliveries = await bb.storage.kv.get<Delivery[]>(`deliveries:${input.threadId}`) ?? [];
+      const existing = deliveries.find(d => d.requestId === input.requestId);
+      if (existing) return { sent: false, message: existing.state === 'sent' ? 'Команда уже отправлена.' : 'Исход отправки не подтверждён. Проверьте ленту чата; автоматический повтор отключён.' };
+      if (deliveries.some(d => d.state !== 'sent')) throw new Error('Есть отправка с неизвестным исходом. Проверьте чат и явно сбросьте её через bb plugin run aif-chat reset-dispatch.');
+      const current = await status(input, false, true);
+      if (current.fingerprint !== input.fingerprint) throw new Error('Карточка устарела. Обновите её и проверьте выбранную задачу.');
+      const action = current.actions.find(a => a.id === input.actionId && a.available);
+      if (!action) throw new Error('Действие недоступно для текущего плана/runtime.');
+      if (current.pendingQuestions) throw new Error('Сначала ответьте на открытые вопросы текущего workflow.');
+      const { thread } = await context(input.threadId);
+      if (!['idle', 'error'].includes(thread.status) || thread.queuedMessageCount > 0 || thread.activeBackgroundAgentCount > 0) throw new Error('В чате выполняется или уже ожидает работа. Дождитесь завершения.');
+      if (deliveries.some(d => d.fingerprint === input.fingerprint && d.actionId === input.actionId && Date.now() - d.at < 15000)) throw new Error('Эта команда только что отправлена. Повторный запуск предотвращён.');
+      const record: Delivery = { requestId: input.requestId, fingerprint: input.fingerprint, actionId: input.actionId, state: 'attempting', at: Date.now() };
+      const next = [...deliveries.slice(-29), record];
+      await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
+      try {
+        await bb.sdk.threads.send({ threadId: input.threadId, input: [{ type: 'text', text: actionPrompt(current, action), mentions: [] }], mode: 'queue-if-active' });
+        record.state = 'sent';
+        await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
+      } catch {
+        record.state = 'uncertain';
+        await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
+        throw new Error('Исход отправки не подтверждён. Сначала проверьте чат; команда автоматически не повторяется.');
+      }
+      cache.clear(); bb.realtime.publish('changed', { threadId: input.threadId });
+      return { sent: true, message: 'Команда отправлена в этот чат.' };
+    }),
+  });
+  bb.agents.registerTool({
+    name: 'aif_chat_status',
+    description: 'Read AI Factory versions, installed extensions, selected plan progress and QA reports in this thread. Returns a previewDirective for a live workflow card. Does not run workflow commands, tests or update installations. phase is agent-declared, not a QA verdict.',
+    parameters: z.object({ target: z.string().max(1000).optional(), phase: phaseSchema.optional() }).strict(),
+    presentation: { label: { pending: 'Читаю статус AI Factory', completed: 'Статус AI Factory' } },
+    async execute(input, ctx) {
+      const result = await show({ threadId: ctx.threadId, target: input.target ?? '', phase: input.phase ?? 'unknown' });
+      return JSON.stringify({ previewDirective: result.previewDirective, versions: result.snapshot.versions, profile: result.snapshot.profile,
+        target: result.snapshot.target?.path ?? null, progress: result.snapshot.target ? { completed: result.snapshot.target.tasks.filter(t => t.done).length, total: result.snapshot.target.tasks.length } : null,
+        checks: result.snapshot.checks, diagnostics: result.snapshot.diagnostics });
+    },
+  });
+  bb.agents.configure(() => enabled ? ({ tools: ["aif_chat_status"], skills: ["aif-chat"], instructions: 'For AI Factory/AIFHub work, use aif_chat_status at workflow boundaries or explicit status requests and emit its previewDirective exactly once on its own line. The directive renders real workflow buttons and read-only plan/check progress. Do not wrap it in code. Report the phase actually reached, preserve exact owner handoffs and gate blocks. Never add a directive after a required final aif-gate-result or inside an exact-handoff-only response. Do not call for unrelated tasks or repeat unchanged cards. Buttons are optional navigation, not required questions. No workflow action runs until the user clicks or has already authorized it. Plugin phase is a declaration; file reports are not proof of current PASS.' }) : ({ tools: [], skills: [], instructions: '' }));
+  bb.cli.register({
+    name: 'aif-chat', summary: 'AI Factory versions, live workflow card and read-only plan/check progress',
+    commands: ['status', 'show', 'check-updates', 'reset', 'reset-dispatch'].map(name => ({ name, summary: name === 'show' ? 'Show a live chat card' : name, usage: `bb plugin run aif-chat ${name} [--thread <id>] [--target <path>] [--phase <phase>] [--json]` })),
+    async run(argv, ctx) {
+      try {
+        const [command = 'help', ...args] = argv;
+        if (command === 'help' || command === '--help') return { exitCode: 0, stdout: 'bb plugin run aif-chat status|show|check-updates|reset|reset-dispatch [--thread ID] [--target PATH] [--phase explore|plan|improve|implement|verify|fix|done] [--json]' };
+        const options: Record<string, string> = {}; let json = false;
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === '--json') { json = true; continue; }
+          if (!['--thread', '--target', '--phase'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Неизвестный аргумент или отсутствует значение.');
+          if (args[i] in options) throw new Error('Повторяющийся аргумент.');
+          const name = args[i]; options[name] = args[++i];
+        }
+        const input = requestSchema.parse({ threadId: options['--thread'] ?? ctx.threadId, target: options['--target'] ?? '', phase: options['--phase'] ?? 'unknown' });
+        if (command === 'reset' || command === 'reset-dispatch') {
+          await context(input.threadId);
+          await bb.storage.kv.delete(`${command === 'reset' ? 'selection' : 'deliveries'}:${input.threadId}`);
+          cache.clear(); return { exitCode: 0, stdout: 'Состояние интерфейса сброшено; проект не изменён.' };
+        }
+        if (!['status', 'show', 'check-updates'].includes(command)) throw new Error('Неизвестная команда.');
+        if (command === 'show') {
+          const result = await show(input);
+          return { exitCode: 0, stdout: json ? JSON.stringify(result) : result.previewDirective };
+        }
+        const result = await status(input, command === 'check-updates', true);
+        return { exitCode: 0, stdout: json ? JSON.stringify(result) : `AI Factory: global ${result.versions.globalCli ?? 'unknown'}, project ${result.versions.installed ?? 'unknown'}\n${result.profile} · ${result.target?.path ?? 'задача не выбрана'}\n${result.diagnostics.join('\n')}` };
+      } catch (e: any) { return { exitCode: 1, stderr: String(e.message).slice(0, 1000) }; }
+    },
+  });
+  for (const event of ['thread.active', 'thread.idle', 'thread.failed'] as const) bb.events.on(event, ({ thread }) => {
+    for (const key of cache.keys()) if (key.includes(thread.id)) cache.delete(key);
+    bb.realtime.publish('changed', { threadId: thread.id });
+  });
+  bb.events.on('thread.deleted', async ({ thread }) => {
+    await bb.storage.kv.delete(`selection:${thread.id}`); await bb.storage.kv.delete(`deliveries:${thread.id}`);
+  });
+  bb.onDispose(() => { cache.clear(); queues.clear(); });
+}
