@@ -12,20 +12,39 @@ async function setup() {
   let failSend = false;
   let pending = 0;
   let output: string | null = null;
+  let events: any[] = [];
   let thread = makeThreadResponse({ id: 'thr_test', projectId: 'proj_test', environmentId: 'env_test', status: 'idle', runtime: { displayStatus: 'idle' } });
   const h = createFakePluginHost({ pluginId: 'aif-chat', agentSkillIds: ['aif-chat'], experimental_hostEntry: true,
     sdk: {
-      threads: { get: async () => thread, output: async () => ({ output }), send: async () => { sends++; if (failSend) throw new Error('lost connection'); return {} as any; }, interactions: { list: async () => Array.from({ length: pending }, () => ({})) as any } },
+      threads: { get: async () => thread, events: { list: async (args: any) => { assert(Number(args.limit) <= 100); return events; } }, output: async () => ({ output }), send: async () => { sends++; if (failSend) throw new Error('lost connection'); return {} as any; }, interactions: { list: async () => Array.from({ length: pending }, () => ({})) as any } },
       environments: { get: async () => ({ id: 'env_test', projectId: 'proj_test', path: '/project', hostId: 'host_test', status: 'ready', lifecycle: { phase: 'active' } }) as any },
     },
     experimental_callHostRpc: async () => structuredClone(value),
   });
   await plugin(h.bb);
   return { ...h, get value() { return value; }, set value(v) { value = v; }, get sends() { return sends; },
-    setOutput(text: string | null) { output = text; }, setQueued(count: number) { thread = { ...thread, queuedMessageCount: count }; },
+    setEvents(rows: any[]) { events = rows; }, setOutput(text: string | null) { output = text; }, setQueued(count: number) { thread = { ...thread, queuedMessageCount: count }; },
     setFailure(v: boolean) { failSend = v; }, setPending(v: number) { pending = v; }, setActive(v: boolean) { thread = { ...thread, status: v ? 'active' : 'idle', runtime: { displayStatus: v ? 'active' : 'idle' } }; } };
 }
 function runInput(fingerprint = 'a'.repeat(64)) { return { threadId: 'thr_test', target: '.ai-factory/plans/demo.md', phase: 'plan', fingerprint, actionId: 'improve', requestId: randomUUID() }; }
+
+test('status restores completed verify from chat, persists across reload and does not invent file evidence', async () => {
+  const h = await setup(); let live = h.harness;
+  try {
+    h.value.checks = [{ id: 'verify', label: 'Verify', state: 'notrun', path: null, detail: 'Missing', required: false }];
+    h.setEvents([{ seq: 12, createdAt: Date.now(), type: 'item/completed', data: { item: { type: 'agentMessage', text: gateText({ affected_files: ['.ai-factory/plans/demo.md'] }) } } }]);
+    const first = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(first.checks[0].chat.result.status, 'warn'); assert.equal(first.checks[0].state, 'notrun');
+    h.setEvents([]); h.setOutput('Later answer without a gate');
+    live = (await live.lifecycle.reload(plugin)).harness;
+    const restored = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(restored.checks[0].chat.seq, 12); assert.equal(h.sends, 0);
+    h.value = { ...h.value, root: '/different-checkout' };
+    live = (await live.lifecycle.reload(plugin)).harness;
+    const other = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(other.checks[0].chat, undefined);
+  } finally { await live.lifecycle.dispose(); }
+});
 
 test('native status tool returns one directive and never dispatches a model', async () => {
   const h = await setup(); try {

@@ -26,7 +26,9 @@ export const snapshotSchema = z.object({
   target: z.object({ path: z.string(), title: z.string(), id: z.string(), kind: z.enum(['fast', 'full', 'fix', 'ultra', 'classic', 'openspec']),
     tasks: z.array(z.object({ id: z.string(), title: z.string(), done: z.boolean() })) }).nullable(),
   checks: z.array(z.object({ id: z.string(), label: z.string(), state: z.enum(['notrun', 'reported-pass', 'warn', 'fail', 'unknown']),
-    detail: z.string(), path: z.string().nullable(), required: z.boolean() })),
+    detail: z.string(), path: z.string().nullable(), required: z.boolean(),
+    chat: z.object({ seq: z.number(), at: z.string(), target: z.string(),
+      result: z.lazy(() => gateResultSchema), freshness: z.literal('unknown') }).optional() })),
   actions: z.array(actionSchema), diagnostics: z.array(z.string()),
 });
 export type Snapshot = z.infer<typeof snapshotSchema>;

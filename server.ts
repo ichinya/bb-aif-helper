@@ -6,6 +6,7 @@ import { requestSchema, phaseSchema, type CardRequest, type Snapshot, type Phase
 import { actionPrompt } from './workflow.ts';
 import { analyzeReply } from './suggestions.ts';
 import { blockedByGate } from './gate.ts';
+import { attachChatChecks, readChatChecks, type ChatCheck } from './check-history.ts';
 export { rpcContract } from './contract.ts';
 type Selection = { environmentId: string; target: string; phase: Phase };
 type Delivery = { requestId: string; fingerprint: string; actionId: string; state: 'attempting' | 'sent' | 'uncertain'; at: number };
@@ -28,6 +29,41 @@ export default async function plugin(bb: BbPluginApi) {
   settings.onChange(next => { enabled = next.enabled; });
   const queues = new Map<string, Promise<unknown>>();
   const cache = new Map<string, { at: number; value: Snapshot }>();
+  const histories = new Map<string, { at: number; records: ChatCheck[] }>();
+  async function chatChecks(threadId: string, environmentId: string, hostId: string, snapshot: Snapshot) {
+    if (!snapshot.target) return;
+    const key = JSON.stringify([threadId, environmentId, hostId, snapshot.root, snapshot.candidates.map(c => c.path)]);
+    let history = histories.get(key);
+    if (!history || Date.now() - history.at > 15000) {
+      try {
+        const rows: Awaited<ReturnType<typeof bb.sdk.threads.events.list>> = [];
+        let beforeSeq: string | undefined;
+        for (let page = 0; page < 6; page++) {
+          const batch = await bb.sdk.threads.events.list({ threadId, order: 'desc', limit: '100', beforeSeq,
+            types: ['item/completed', 'client/turn/requested'] });
+          rows.push(...batch);
+          if (batch.length < 100) break;
+          beforeSeq = String(Math.min(...batch.map(row => row.seq)));
+        }
+        const storageKey = `chat-checks:${threadId}:${environmentId}:${createHash('sha256').update(JSON.stringify([hostId, snapshot.root])).digest('hex')}`;
+        const saved = await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [];
+        const records = [...saved, ...readChatChecks(rows, snapshot.candidates.map(c => c.path))];
+        const latest = new Map<string, ChatCheck>();
+        for (const record of records) {
+          const id = `${record.target}:${record.result.gate}`;
+          if ((latest.get(id)?.seq ?? -1) < record.seq) latest.set(id, record);
+        }
+        history = { at: Date.now(), records: [...latest.values()].slice(-200) };
+        await bb.storage.kv.set(storageKey, history.records);
+        if (histories.size > 100) histories.clear();
+        histories.set(key, history);
+      } catch (error) {
+        bb.log.warn(`Chat gate history: ${error instanceof Error ? error.message.slice(0, 500) : 'unavailable'}`);
+        snapshot.diagnostics.push('Не удалось прочитать gate из истории чата. Результаты файлов показаны отдельно.');
+      }
+    }
+    if (history) attachChatChecks(snapshot, history.records);
+  }
   async function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const current = (queues.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
     queues.set(key, current);
@@ -68,6 +104,7 @@ export default async function plugin(bb: BbPluginApi) {
       snapshot.pendingQuestions = (await bb.sdk.threads.interactions.list({ threadId: input.threadId })).length;
       if (snapshot.pendingQuestions > 0) snapshot.threadState = 'awaiting_input';
     } catch { snapshot.pendingQuestions = null; }
+    await chatChecks(input.threadId, environment.id, environment.hostId, snapshot);
     return snapshot;
   }
   async function show(input: CardRequest) {
@@ -217,6 +254,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   for (const event of ['thread.active', 'thread.idle', 'thread.failed'] as const) bb.events.on(event, ({ thread }) => {
+    for (const key of histories.keys()) if (key.includes(thread.id)) histories.delete(key);
     for (const key of cache.keys()) if (key.includes(thread.id)) cache.delete(key);
     bb.realtime.publish('changed', { threadId: thread.id });
   });
@@ -224,5 +262,5 @@ export default async function plugin(bb: BbPluginApi) {
     await bb.storage.kv.delete(`selection:${thread.id}`); await bb.storage.kv.delete(`deliveries:${thread.id}`);
     await bb.storage.kv.delete(`suggestions-dismissed:${thread.id}`);
   });
-  bb.onDispose(() => { cache.clear(); queues.clear(); });
+  bb.onDispose(() => { cache.clear(); histories.clear(); queues.clear(); });
 }

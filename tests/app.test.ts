@@ -16,6 +16,19 @@ const app = await loadPluginApp(() => import('../app.tsx'));
 const props = { attributes: { phase: 'plan' }, source: '::aif-chat{phase="plan"}', message: { id: 'msg_1', threadId: 'thr_test', turnId: 'turn_1', projectId: 'proj_test' }, openWorkspaceFile: null };
 function data() { const s = snapshot(); s.actions = workflowActions(s); return s; }
 
+test('checks distinguish completed chat WARN from missing file evidence', async () => {
+  const s = data(); s.checks = [{ id: 'verify', label: 'Соответствие плану', state: 'notrun', detail: 'Unknown launch', path: null, required: false,
+    chat: { seq: 12, at: '2026-11-02T12:00:00Z', target: s.target!.path, freshness: 'unknown',
+      result: { schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: [], suggested_next: null } } }];
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s } });
+  try {
+    await slot.findByText('WARN · из чата');
+    await slot.findByText(/Актуальность для текущих файлов не подтверждена/);
+    await slot.findByText('Файловый отчёт: не найден.');
+    assert(!slot.queryByText('Unknown launch'));
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('registers chat renderer and thread context card without replacing composer or sidebar', () => {
   assert.equal(app.messageDirectives[0].id, 'aif-chat'); assert.equal(app.threadContextCardSections.length, 1);
   assert.equal(app.navPanels.length, 0);

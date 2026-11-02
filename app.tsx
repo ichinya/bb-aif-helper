@@ -81,12 +81,16 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
           {!tasks.length && <p className="aif-muted">Чекбоксы задач не найдены; прогресс неизвестен.</p>}</details>
       </div>}
       {renderActions(snapshot.actions.filter(a => a.group === 'next').slice(0, 3))}
-      {snapshot.target && <details className="aif-checks"><summary>Что проверить <span className="aif-muted">· {snapshot.checks.filter(c => c.state === 'reported-pass').length} отчётов PASS</span></summary>
+      {snapshot.target && <details className="aif-checks"><summary>Что проверить <span className="aif-muted">· из чата: {snapshot.checks.filter(c => c.chat).length} · отчётов PASS: {snapshot.checks.filter(c => c.state === 'reported-pass').length}</span></summary>
         <p className="aif-muted aif-small">Галочки задач и результаты проверок независимы. Актуальность evidence подтверждает владелец workflow.</p>
         <ul>{snapshot.checks.map(c => <li key={c.id}><div><strong>{c.label}</strong>{c.required && <small className="aif-required">нужно для завершения</small>}</div>
-          <span className={`aif-check-state aif-${c.state}`} title={c.detail}>{checkLabels[c.state]}</span>
+          <span className={`aif-check-state aif-${c.chat ? c.chat.result.status === 'pass' ? 'reported-pass' : c.chat.result.status : c.state}`} title={c.detail}>{c.chat ? `${c.chat.result.status.toUpperCase()} · из чата` : checkLabels[c.state]}</span>
           {c.path && openFile && <button className="aif-link" onClick={() => { if (!openFile(c.path!)) setError('Просмотр файла недоступен в этой поверхности.'); }}>Отчёт</button>}
-          <small className="aif-check-detail">{c.detail}</small></li>)}</ul>
+          {c.chat && <small className="aif-check-detail">Gate завершён · {new Date(c.chat.at).toLocaleString('ru')} · сообщение #{c.chat.seq}. Актуальность для текущих файлов не подтверждена.
+            {c.chat.result.blocking ? ' Есть блокирующие проблемы.' : ' Блокеров нет.'}
+            {c.chat.result.blockers.map(b => <span key={b.id}>{` ${b.id}: ${b.summary}${b.file ? ` (${b.file})` : ''}`}</span>)}
+            {c.chat.result.suggested_next?.reason && <span>{` ${c.chat.result.suggested_next.reason}`}</span>}</small>}
+          <small className="aif-check-detail">{c.chat ? `Файловый отчёт: ${c.path ? checkLabels[c.state] + '. ' + c.detail : 'не найден.'}` : c.detail}</small></li>)}</ul>
         {renderActions(snapshot.actions.filter(a => a.group === 'check'))}
         <details className="aif-setup"><summary>Настройка инструментов</summary>{renderActions(snapshot.actions.filter(a => a.group === 'setup'))}</details>
       </details>}
