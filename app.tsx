@@ -38,10 +38,10 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
   const sendingRef = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; sequence.current++; }; }, []);
   useEffect(() => { setTarget(initialTarget); setSnapshot(null); }, [initialTarget, threadId]);
-  const refresh = useCallback(async (checkUpdates = false) => {
+  const refresh = useCallback(async (checkUpdates = false, force = false) => {
     const id = ++sequence.current;
     try {
-      const value = await rpc.call('status', { threadId, target, phase, checkUpdates });
+      const value = await rpc.call('status', { threadId, target, phase, checkUpdates, force });
       if (mounted.current && id === sequence.current) { setSnapshot(value); setError(''); }
     } catch (e) {
       if (mounted.current && id === sequence.current) { setError(e instanceof Error ? e.message : String(e)); setSnapshot(null); }
@@ -73,7 +73,7 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
   return <section className={`aif-card${compact ? ' aif-compact' : ''}`} aria-label="AI Factory workflow">
     <header className="aif-heading"><strong><span aria-hidden="true">◈</span> AI Factory</strong>
       {snapshot && <span className="aif-profile">{profileNames[snapshot.profile]}</span>}
-      <button className="aif-refresh" type="button" onClick={() => void refresh()} aria-label="Обновить статус AI Factory" title="Перечитать локальные данные">↻</button>
+      <button className="aif-refresh" type="button" onClick={() => void refresh(false, true)} aria-label="Обновить статус AI Factory" title="Перечитать данные без кэша">↻</button>
     </header>
     {loading && <p role="status" className="aif-muted">Читаю локальный статус…</p>}
     {error && <p role="alert" className="aif-error">{error}</p>}
@@ -123,7 +123,8 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
           <small>Записано: {e.recordedVersion ?? 'не указано'} · {e.source}</small>{e.contributions.length > 0 && <small>Настроенные injections: {e.contributions.join(', ')}. Это не подтверждение загрузки в текущую сессию.</small>}</li>)}</ul> : <p className="aif-muted">Расширения не зарегистрированы в этом проекте.</p>}
       </details>
       {snapshot.diagnostics.length > 0 && <details className="aif-diagnostics"><summary>Примечания · {snapshot.diagnostics.length}</summary><ul>{snapshot.diagnostics.map((d, i) => <li key={i}>{d}</li>)}</ul></details>}
-      <footer className="aif-muted aif-small">Локальный статус · {new Date(snapshot.collectedAt).toLocaleTimeString()} · {busy ? 'действия доступны после завершения работы' : 'кнопки отправляют выбранную команду в этот чат'}</footer>
+      <footer className="aif-muted aif-small">{snapshot.cache?.source === 'saved' ? 'Сохранённые данные' : snapshot.cache?.source === 'memory' ? 'Данные из кэша' : 'Локальный статус'} · {new Date(snapshot.collectedAt).toLocaleTimeString()}
+        {snapshot.cache?.refreshing && ' · обновляются в фоне…'}{snapshot.cache?.refreshError && ' · обновление не удалось; нажмите ↻ для повторного чтения'} · {busy ? 'действия доступны после завершения работы' : 'кнопки отправляют выбранную команду в этот чат'}</footer>
     </>}
   </section>;
 }

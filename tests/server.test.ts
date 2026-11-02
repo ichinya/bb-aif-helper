@@ -13,20 +13,52 @@ async function setup() {
   let pending = 0;
   let output: string | null = null;
   let events: any[] = [];
+  let collections = 0;
+  let collectBlock: Promise<void> | null = null;
   let thread = makeThreadResponse({ id: 'thr_test', projectId: 'proj_test', environmentId: 'env_test', status: 'idle', runtime: { displayStatus: 'idle' } });
   const h = createFakePluginHost({ pluginId: 'aif-chat', agentSkillIds: ['aif-chat'], experimental_hostEntry: true,
     sdk: {
       threads: { get: async () => thread, events: { list: async (args: any) => { assert(Number(args.limit) <= 100); return events; } }, output: async () => ({ output }), send: async () => { sends++; if (failSend) throw new Error('lost connection'); return {} as any; }, interactions: { list: async () => Array.from({ length: pending }, () => ({})) as any } },
       environments: { get: async () => ({ id: 'env_test', projectId: 'proj_test', path: '/project', hostId: 'host_test', status: 'ready', lifecycle: { phase: 'active' } }) as any },
     },
-    experimental_callHostRpc: async () => structuredClone(value),
+    experimental_callHostRpc: async () => { collections++; if (collectBlock) await collectBlock; return structuredClone(value); },
   });
   await plugin(h.bb);
   return { ...h, get value() { return value; }, set value(v) { value = v; }, get sends() { return sends; },
+    get collections() { return collections; }, setCollectBlock(block: Promise<void> | null) { collectBlock = block; },
     setEvents(rows: any[]) { events = rows; }, setOutput(text: string | null) { output = text; }, setQueued(count: number) { thread = { ...thread, queuedMessageCount: count }; },
     setFailure(v: boolean) { failSend = v; }, setPending(v: number) { pending = v; }, setActive(v: boolean) { thread = { ...thread, status: v ? 'active' : 'idle', runtime: { displayStatus: v ? 'active' : 'idle' } }; } };
 }
 function runInput(fingerprint = 'a'.repeat(64)) { return { threadId: 'thr_test', target: '.ai-factory/plans/demo.md', phase: 'plan', fingerprint, actionId: 'improve', requestId: randomUUID() }; }
+
+test('cards with different phases share a scan; force and action dispatch still re-read the host', async () => {
+  const h = await setup(); try {
+    const [plan, verify] = await Promise.all([
+      h.harness.behavior.callRpc('status', { threadId: 'thr_test', target: runInput().target, phase: 'plan' }),
+      h.harness.behavior.callRpc('status', { threadId: 'thr_test', target: runInput().target, phase: 'verify' }),
+    ]) as any[];
+    assert.equal(h.collections, 1); assert.equal(plan.phase, 'plan'); assert.equal(verify.phase, 'verify');
+    await h.harness.behavior.callRpc('status', { threadId: 'thr_test', target: runInput().target });
+    assert.equal(h.collections, 1);
+    await h.harness.behavior.callRpc('status', { threadId: 'thr_test', target: runInput().target, force: true });
+    assert.equal(h.collections, 2);
+    h.value.fingerprint = 'b'.repeat(64);
+    await assert.rejects(h.harness.behavior.callRpc('run', runInput()));
+    assert.equal(h.collections, 3); assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
+test('SQLite snapshot is returned after plugin reload while the host revalidates in the background', async () => {
+  const h = await setup(); let live = h.harness; let release!: () => void;
+  try {
+    await live.behavior.callRpc('status', { threadId: 'thr_test', force: true });
+    live = (await live.lifecycle.reload(plugin)).harness;
+    h.setCollectBlock(new Promise<void>(resolve => { release = resolve; }));
+    const saved = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(saved.cache.source, 'saved'); assert.equal(saved.cache.refreshing, true); assert.equal(h.collections, 2);
+    h.setCollectBlock(null); release();
+  } finally { release?.(); await live.lifecycle.dispose(); }
+});
 
 test('a live completed gate blocks unchanged checks across reload and re-enables them after input changes', async () => {
   const h = await setup(); let live = h.harness;
@@ -35,7 +67,7 @@ test('a live completed gate blocks unchanged checks across reload and re-enables
     h.value.checks = [{ id: 'verify', label: 'Verify', state: 'notrun', path: null, detail: 'Missing', required: false }];
     const text = gateText({ affected_files: ['.ai-factory/plans/demo.md'] });
     h.setEvents([{ seq: 31, createdAt: Date.now(), type: 'item/completed', data: { item: { type: 'agentMessage', text } } }]);
-    const historical = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    const historical = await live.behavior.callRpc('status', { threadId: 'thr_test', force: true }) as any;
     assert.equal(historical.checks[0].chat.freshness, 'unknown');
     await live.behavior.emitThreadEvent('thread.idle', { thread: makeThreadResponse({ id: 'thr_test' }), lastAssistantText: text });
     const done = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
@@ -51,7 +83,7 @@ test('a live completed gate blocks unchanged checks across reload and re-enables
     assert.equal(restored.checks[0].chat.freshness, 'unchanged');
     h.value.inputsFingerprint = 'd'.repeat(64); h.value.fingerprint = 'd'.repeat(64);
     await live.behavior.emitThreadEvent('thread.active', { thread: makeThreadResponse({ id: 'thr_test' }) });
-    const changed = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    const changed = await live.behavior.callRpc('status', { threadId: 'thr_test', force: true }) as any;
     assert.equal(changed.checks[0].chat.freshness, 'changed');
     assert.equal(changed.actions.find((a: any) => a.id === 'check-verify').available, true);
     // A duplicate idle announcement cannot rebind an old result to the new inputs.
@@ -85,7 +117,7 @@ test('status restores completed verify from chat, persists across reload and doe
   try {
     h.value.checks = [{ id: 'verify', label: 'Verify', state: 'notrun', path: null, detail: 'Missing', required: false }];
     h.setEvents([{ seq: 12, createdAt: Date.now(), type: 'item/completed', data: { item: { type: 'agentMessage', text: gateText({ affected_files: ['.ai-factory/plans/demo.md'] }) } } }]);
-    const first = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    const first = await live.behavior.callRpc('status', { threadId: 'thr_test', force: true }) as any;
     assert.equal(first.checks[0].chat.result.status, 'warn'); assert.equal(first.checks[0].state, 'notrun');
     h.setEvents([]); h.setOutput('Later answer without a gate');
     live = (await live.lifecycle.reload(plugin)).harness;
@@ -93,7 +125,7 @@ test('status restores completed verify from chat, persists across reload and doe
     assert.equal(restored.checks[0].chat.seq, 12); assert.equal(h.sends, 0);
     h.value = { ...h.value, root: '/different-checkout' };
     live = (await live.lifecycle.reload(plugin)).harness;
-    const other = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    const other = await live.behavior.callRpc('status', { threadId: 'thr_test', force: true }) as any;
     assert.equal(other.checks[0].chat, undefined);
   } finally { await live.lifecycle.dispose(); }
 });

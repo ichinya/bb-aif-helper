@@ -17,6 +17,18 @@ const app = await loadPluginApp(() => import('../app.tsx'));
 const props = { attributes: { phase: 'plan' }, source: '::aif-chat{phase="plan"}', message: { id: 'msg_1', threadId: 'thr_test', turnId: 'turn_1', projectId: 'proj_test' }, openWorkspaceFile: null };
 function data() { const s = snapshot(); s.actions = workflowActions(s); return s; }
 
+test('saved-data state is visible and the refresh button explicitly bypasses the cache', async () => {
+  const s = data(); s.cache = { source: 'saved', refreshing: true, refreshError: false };
+  const requests: any[] = [];
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: (input: any) => { requests.push(input); return s; } } });
+  try {
+    await slot.findByText(/Сохранённые данные.*обновляются в фоне/);
+    fireEvent.click(slot.getByRole('button', { name: 'Обновить статус AI Factory' }));
+    await waitFor(() => assert(requests.some(input => input.force === true)));
+    assert.equal(requests[0].force, false);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('check buttons belong to their rows and unchanged checks show an accurate disabled reason', async () => {
   const s = data(); s.checks = ['verify', 'security'].map(id => ({ id, label: id === 'verify' ? 'Соответствие плану' : 'Безопасность', state: 'notrun', detail: '', path: null, required: false }));
   s.checks[0].chat = { seq: 1, at: s.collectedAt, target: s.target!.path, freshness: 'unchanged', inputFingerprint: 'a'.repeat(64),

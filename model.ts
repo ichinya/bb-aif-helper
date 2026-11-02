@@ -13,6 +13,7 @@ export const actionSchema = z.object({
 export const snapshotSchema = z.object({
   schemaVersion: z.literal('aif-chat/v1'), collectedAt: z.string(), fingerprint: z.string(),
   inputsFingerprint: z.string().length(64).nullable().default(null),
+  cache: z.object({ source: z.enum(['live', 'memory', 'saved']), refreshing: z.boolean(), refreshError: z.boolean() }).optional(),
   root: z.string(), runtime: z.string(), configured: z.boolean(),
   profile: z.enum(['none', 'upstream', 'aifhub-classic', 'aifhub-openspec', 'aifhub-ultra', 'invalid']),
   threadState: z.string(),

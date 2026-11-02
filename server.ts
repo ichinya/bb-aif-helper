@@ -2,12 +2,13 @@ import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { hostContract, rpcContract } from './contract.ts';
-import { requestSchema, phaseSchema, type CardRequest, type Snapshot, type Phase, type Suggestions } from './model.ts';
-import { actionPrompt } from './workflow.ts';
+import { requestSchema, phaseSchema, snapshotSchema, type CardRequest, type Snapshot, type Phase, type Suggestions } from './model.ts';
+import { actionPrompt, workflowActions } from './workflow.ts';
 import { analyzeReply } from './suggestions.ts';
 import { blockedByGate } from './gate.ts';
 import { attachChatChecks, readChatChecks, type ChatCheck } from './check-history.ts';
 import { lockUnchangedChecks, unchangedCheck, unchangedReason } from './check-actions.ts';
+import { SnapshotCache } from './snapshot-cache.ts';
 export { rpcContract } from './contract.ts';
 type Selection = { environmentId: string; target: string; phase: Phase };
 type Delivery = { requestId: string; fingerprint: string; actionId: string; state: 'attempting' | 'sent' | 'uncertain'; at: number };
@@ -35,25 +36,50 @@ export default async function plugin(bb: BbPluginApi) {
   let enabled = (await settings.get()).enabled;
   settings.onChange(next => { enabled = next.enabled; });
   const queues = new Map<string, Promise<unknown>>();
-  const cache = new Map<string, { at: number; value: Snapshot }>();
-  const histories = new Map<string, { at: number; records: ChatCheck[] }>();
-  async function chatChecks(threadId: string, environmentId: string, hostId: string, snapshot: Snapshot) {
+  let disposed = false;
+  const db = bb.storage.database();
+  bb.storage.migrate(db, ['CREATE TABLE IF NOT EXISTS status_cache (key TEXT PRIMARY KEY, at INTEGER NOT NULL, value TEXT NOT NULL)']);
+  const cacheRead = db.prepare('SELECT at, value FROM status_cache WHERE key = ?');
+  const cacheWrite = db.prepare('INSERT INTO status_cache (key, at, value) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET at=excluded.at, value=excluded.value');
+  const watchers = new Map<string, Set<string>>();
+  const cache = new SnapshotCache({
+    read(key) {
+      const row = cacheRead.get(key) as { at: number; value: string } | undefined;
+      if (!row) return null;
+      const parsed = snapshotSchema.safeParse(JSON.parse(row.value));
+      return parsed.success && Number.isFinite(row.at) ? { at: row.at, value: parsed.data } : null;
+    },
+    write(key, entry) {
+      const json = JSON.stringify(entry.value);
+      if (Buffer.byteLength(json) > 1024 * 1024) return;
+      cacheWrite.run(key, entry.at, json);
+      db.prepare('DELETE FROM status_cache WHERE key IN (SELECT key FROM status_cache ORDER BY at DESC LIMIT -1 OFFSET 100)').run();
+    },
+    changed(key) { for (const threadId of watchers.get(key) ?? []) bb.realtime.publish('changed', { threadId }); },
+  });
+  const histories = new Map<string, { at: number; records: ChatCheck[]; error?: boolean }>();
+  const historyLoads = new Map<string, Promise<void>>();
+  const historyEpochs = new Map<string, number>();
+  async function chatChecks(threadId: string, environmentId: string, hostId: string, snapshot: Snapshot, fresh: boolean) {
     if (!snapshot.candidates.length) return;
-    const key = JSON.stringify([threadId, environmentId, hostId, snapshot.root, snapshot.candidates.map(c => c.path)]);
-    let history = histories.get(key);
-    if (!history || Date.now() - history.at > 15000) {
+    const epoch = historyEpochs.get(threadId) ?? 0;
+    const key = JSON.stringify([threadId, environmentId, hostId, snapshot.root, snapshot.candidates.map(c => c.path), epoch]);
+    const storageKey = chatStorageKey(threadId, environmentId, hostId, snapshot.root);
+    if (!histories.has(key)) histories.set(key, { at: 0, records: await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [] });
+    const load = async () => {
       try {
         const rows: Awaited<ReturnType<typeof bb.sdk.threads.events.list>> = [];
         let beforeSeq: string | undefined;
         for (let page = 0; page < 6; page++) {
           const batch = await bb.sdk.threads.events.list({ threadId, order: 'desc', limit: '100', beforeSeq,
             types: ['item/completed', 'client/turn/requested'] });
+          if (disposed || epoch !== (historyEpochs.get(threadId) ?? 0)) return;
           rows.push(...batch);
           if (batch.length < 100) break;
           beforeSeq = String(Math.min(...batch.map(row => row.seq)));
         }
-        const storageKey = chatStorageKey(threadId, environmentId, hostId, snapshot.root);
-        history = await serial(`history:${storageKey}`, async () => {
+        if (disposed) return;
+        const history = await serial(`history:${storageKey}`, async () => {
           const saved = await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [];
           const records = [...saved, ...readChatChecks(rows, snapshot.candidates.map(c => c.path))];
           const latest = new Map<string, ChatCheck>();
@@ -67,12 +93,25 @@ export default async function plugin(bb: BbPluginApi) {
         });
         if (histories.size > 100) histories.clear();
         histories.set(key, history);
+        bb.realtime.publish('changed', { threadId });
       } catch (error) {
+        if (disposed) return;
         bb.log.warn(`Chat gate history: ${error instanceof Error ? error.message.slice(0, 500) : 'unavailable'}`);
-        snapshot.diagnostics.push('Не удалось прочитать gate из истории чата. Результаты файлов показаны отдельно.');
+        const history = histories.get(key); if (history) { history.at = Date.now() - 45000; history.error = true; }
+        bb.realtime.publish('changed', { threadId });
       }
+    };
+    if (fresh || Date.now() - histories.get(key)!.at > 60000) {
+      if (!historyLoads.has(key)) {
+        const pending = load().finally(() => { if (historyLoads.get(key) === pending) historyLoads.delete(key); });
+        historyLoads.set(key, pending);
+      }
+      if (fresh) await historyLoads.get(key);
+      else void historyLoads.get(key)?.catch(() => {});
     }
+    const history = histories.get(key);
     if (history) attachChatChecks(snapshot, history.records);
+    if (history?.error) snapshot.diagnostics.push('История gate не обновилась; показаны сохранённые результаты.');
   }
   async function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const current = (queues.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
@@ -96,25 +135,30 @@ export default async function plugin(bb: BbPluginApi) {
     const target = input.target || selection?.target || '';
     const phase = input.phase === 'unknown' ? selection?.phase ?? input.phase : input.phase;
     const runtime = config.runtime === 'auto' ? thread.providerId === 'codex' ? 'codex-app' : thread.providerId : config.runtime;
-    const key = JSON.stringify([input.threadId, environment.id, environment.path, environment.hostId, target, phase, runtime, config.sourceRepo, config.upstreamRepo, config.upstreamRef]);
-    const cached = cache.get(key);
-    let snapshot: Snapshot;
-    if (!fresh && !checkUpdates && cached && Date.now() - cached.at < 2000) snapshot = structuredClone(cached.value);
-    else {
-      snapshot = await host.call('collect', { root: environment.path!, target, phase, runtime, sourceRepo: config.sourceRepo,
+    const key = JSON.stringify(['status/v1', environment.id, environment.path, environment.hostId, target, runtime, config.sourceRepo, config.upstreamRepo, config.upstreamRef]);
+    if (watchers.size > 100) watchers.clear();
+    const listeners = watchers.get(key) ?? new Set<string>(); listeners.add(input.threadId); watchers.set(key, listeners);
+    if (fresh || checkUpdates) cache.invalidate(candidate => candidate === key);
+    const snapshot = await cache.get(key, async () => {
+      const collected = await host.call('collect', { root: environment.path!, target, phase: 'unknown', runtime, sourceRepo: config.sourceRepo,
         checkUpdates, upstreamRepo: config.upstreamRepo, upstreamRef: config.upstreamRef }, { hostId: environment.hostId });
       const remoteKey = `upstream:${environment.hostId}:${config.upstreamRepo}:${config.upstreamRef}`;
-      if (checkUpdates) await bb.storage.kv.set(remoteKey, snapshot.upstream);
-      else snapshot.upstream = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey) ?? snapshot.upstream;
-      if (cache.size > 100) cache.clear();
-      cache.set(key, { at: Date.now(), value: structuredClone(snapshot) });
+      if (checkUpdates) await bb.storage.kv.set(remoteKey, collected.upstream);
+      else collected.upstream = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey) ?? collected.upstream;
+      return collected;
+    }, fresh || checkUpdates);
+    if (snapshot.phase !== phase) {
+      snapshot.fingerprint = createHash('sha256').update(JSON.stringify([snapshot.fingerprint, phase])).digest('hex');
+      snapshot.phase = phase;
+      snapshot.phaseSource = phase === 'unknown' ? 'Этап не указан; состояние файлов не доказывает активный вызов' : 'Этап указан агентом в карточке; выполнение проверяется BB';
     }
+    snapshot.actions = workflowActions(snapshot);
     snapshot.threadState = thread.runtime.displayStatus;
     try {
       snapshot.pendingQuestions = (await bb.sdk.threads.interactions.list({ threadId: input.threadId })).length;
       if (snapshot.pendingQuestions > 0) snapshot.threadState = 'awaiting_input';
     } catch { snapshot.pendingQuestions = null; }
-    await chatChecks(input.threadId, environment.id, environment.hostId, snapshot);
+    await chatChecks(input.threadId, environment.id, environment.hostId, snapshot, fresh);
     lockUnchangedChecks(snapshot);
     return snapshot;
   }
@@ -145,7 +189,7 @@ export default async function plugin(bb: BbPluginApi) {
     return { view, ids, hidden, snapshot };
   }
   bb.rpc.register(rpcContract, {
-    status: input => status(input, input.checkUpdates),
+    status: input => status(input, input.checkUpdates, input.force),
     suggestions: async input => (await suggested(input.threadId)).view,
     dismissSuggestion: input => serial(input.threadId, async () => {
       const current = await suggested(input.threadId);
@@ -184,7 +228,7 @@ export default async function plugin(bb: BbPluginApi) {
         throw new Error('Исход отправки не подтверждён. Сначала проверьте чат; команда автоматически не повторяется.');
       }
       await bb.storage.kv.set(`suggestions-dismissed:${input.threadId}`, { sourceKey: input.sourceKey, ids: [...new Set([...current.hidden, item.id])] } satisfies DismissedSuggestions);
-      cache.clear(); bb.realtime.publish('changed', { threadId: input.threadId });
+      cache.invalidate(key => !!watchers.get(key)?.has(input.threadId)); bb.realtime.publish('changed', { threadId: input.threadId });
       return { sent: true, message: 'Команда отправлена в этот чат.' };
     }),
     run: input => serial(input.threadId, async () => {
@@ -219,7 +263,7 @@ export default async function plugin(bb: BbPluginApi) {
         await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
         throw new Error('Исход отправки не подтверждён. Сначала проверьте чат; команда автоматически не повторяется.');
       }
-      cache.clear(); bb.realtime.publish('changed', { threadId: input.threadId });
+      cache.invalidate(key => !!watchers.get(key)?.has(input.threadId)); bb.realtime.publish('changed', { threadId: input.threadId });
       return { sent: true, message: 'Команда отправлена в этот чат.' };
     }),
   });
@@ -254,7 +298,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (command === 'reset' || command === 'reset-dispatch') {
           await context(input.threadId);
           await bb.storage.kv.delete(`${command === 'reset' ? 'selection' : 'deliveries'}:${input.threadId}`);
-          cache.clear(); return { exitCode: 0, stdout: 'Состояние интерфейса сброшено; проект не изменён.' };
+          cache.invalidate(key => !!watchers.get(key)?.has(input.threadId)); return { exitCode: 0, stdout: 'Состояние интерфейса сброшено; проект не изменён.' };
         }
         if (!['status', 'show', 'check-updates'].includes(command)) throw new Error('Неизвестная команда.');
         if (command === 'show') {
@@ -267,8 +311,11 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   for (const event of ['thread.active', 'thread.idle', 'thread.failed'] as const) bb.events.on(event, ({ thread }) => {
-    for (const key of histories.keys()) if (key.includes(thread.id)) histories.delete(key);
-    for (const key of cache.keys()) if (key.includes(thread.id)) cache.delete(key);
+    if (event !== 'thread.active') {
+      historyEpochs.set(thread.id, (historyEpochs.get(thread.id) ?? 0) + 1);
+      for (const key of histories.keys()) if (key.includes(thread.id)) histories.delete(key);
+      cache.invalidate(key => !!watchers.get(key)?.has(thread.id) || !!thread.environmentId && key.includes(thread.environmentId));
+    }
     bb.realtime.publish('changed', { threadId: thread.id });
   });
   bb.events.on('thread.idle', async ({ thread, lastAssistantText }) => {
@@ -303,8 +350,10 @@ export default async function plugin(bb: BbPluginApi) {
     } catch { bb.log.warn('Could not bind completed gate to workspace inputs; repeat checks remain available.'); }
   });
   bb.events.on('thread.deleted', async ({ thread }) => {
+    historyEpochs.delete(thread.id);
+    for (const listeners of watchers.values()) listeners.delete(thread.id);
     await bb.storage.kv.delete(`selection:${thread.id}`); await bb.storage.kv.delete(`deliveries:${thread.id}`);
     await bb.storage.kv.delete(`suggestions-dismissed:${thread.id}`);
   });
-  bb.onDispose(() => { cache.clear(); histories.clear(); queues.clear(); });
+  bb.onDispose(() => { disposed = true; cache.dispose(); histories.clear(); historyLoads.clear(); historyEpochs.clear(); watchers.clear(); queues.clear(); });
 }
