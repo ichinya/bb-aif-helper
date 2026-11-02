@@ -15,6 +15,8 @@ In the transcript, the JSON fence is collapsed under "Данные gate" by its 
 
 The checks table also restores completed gates from thread history, scoped to an explicit canonical plan path in affected files or the preceding launch request. Each gate retains its last discovered result across later replies and plugin reloads. `WARN/PASS/FAIL · из чата` records the declared historical outcome with time and message sequence; it does not create a report file, attest current inputs, or satisfy workflow readiness. Keep that distinction when reporting status. A command launch or prose PASS alone is not a completed gate.
 
+Check buttons are beside their rows. On a live completed verify/rules/security/review, the plugin may bind the declared result to an observed workspace fingerprint. Matching inputs disable repeat buttons with "без изменений"; changed inputs enable them again. Old results and unavailable fingerprints remain unknown and never acquire today's fingerprint just by opening the panel. This comparison is a navigation guard, not proof of fresh PASS. An explicit user request to recheck still authorizes the skill normally; do not infer completion from a disabled button.
+
 Use native tool `aif_chat_status` with the selected project-relative plan/change entrypoint and the phase actually reached (`explore`, `plan`, `improve`, `implement`, `verify`, `fix`, `done`). Emit its `previewDirective` exactly once on its own line, outside code. It renders an interactive card in this chat. Do not repeat unchanged cards. The tool reads files; it never executes workflow commands, tests or installs updates.
 
 CLI fallback:

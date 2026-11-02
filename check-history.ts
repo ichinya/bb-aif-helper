@@ -2,7 +2,7 @@ import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { parseReplyGate } from './gate.ts';
 import type { GateResult, Snapshot } from './model.ts';
 
-export type ChatCheck = { seq: number; at: string; target: string; result: GateResult };
+export type ChatCheck = { seq: number; at: string; target: string; result: GateResult; inputFingerprint?: string; observedAt?: string };
 export type HistoryRow = Awaited<ReturnType<BbPluginApi['sdk']['threads']['events']['list']>>[number];
 const normalize = (value: string) => value.replace(/\\/g, '/').replace(/^@/, '').replace(/^\.\//, '');
 
@@ -38,6 +38,7 @@ export function attachChatChecks(snapshot: Snapshot, records: ChatCheck[]) {
   for (const check of snapshot.checks) {
     const record = records.filter(r => r.target === normalize(snapshot.target!.path) && r.result.gate === check.id)
       .sort((a, b) => b.seq - a.seq)[0];
-    if (record) check.chat = { ...record, freshness: 'unknown' };
+    if (record) check.chat = { ...record, freshness: record.inputFingerprint && snapshot.inputsFingerprint
+      ? record.inputFingerprint === snapshot.inputsFingerprint ? 'unchanged' : 'changed' : 'unknown' };
   }
 }

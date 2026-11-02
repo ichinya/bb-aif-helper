@@ -103,11 +103,11 @@ class Reader {
   }
 }
 
-async function git(root: string, args: string[], signal?: AbortSignal): Promise<string | null> {
+async function git(root: string, args: string[], signal?: AbortSignal, trim = true): Promise<string | null> {
   try {
     const { stdout } = await exec('git', ['--no-optional-locks', '-c', `safe.directory=${root.replaceAll('\\', '/')}`, '-c', 'core.fsmonitor=false', '-C', root, ...args],
       { timeout: 5000, maxBuffer: 1024 * 1024, windowsHide: true, signal });
-    return stdout.trim();
+    return trim ? stdout.trim() : stdout;
   } catch { return null; }
 }
 function sourceLabel(value: unknown): string {
@@ -177,7 +177,7 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
   if (!(await fs.stat(root)).isDirectory()) throw new Error('Рабочая папка недоступна.');
   const read = new Reader(root);
   const s: Snapshot = {
-    schemaVersion: 'aif-chat/v1', collectedAt: new Date().toISOString(), fingerprint: '', root, runtime: input.runtime, configured: false,
+    schemaVersion: 'aif-chat/v1', collectedAt: new Date().toISOString(), fingerprint: '', inputsFingerprint: null, root, runtime: input.runtime, configured: false,
     profile: 'none', phase: input.phase, phaseSource: input.phase === 'unknown' ? 'Этап не указан; состояние файлов не доказывает активный вызов' : 'Этап указан агентом в карточке; выполнение проверяется BB',
     threadState: 'unknown',
     pendingQuestions: null,
@@ -346,6 +346,31 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
   }
   if (s.versions.globalCli && s.versions.installed && s.versions.globalCli !== s.versions.installed) s.diagnostics.push('Версии глобального CLI и установки проекта различаются. Для обновления нажмите «Обновить AI Factory».');
   s.fingerprint = hash(JSON.stringify({ root, runtime: s.runtime, profile: s.profile, target: s.target?.path, phase: s.phase, versions: s.versions, head, branch, dirty: hash(dirtyDiff ?? 'unknown'), status, files: [...read.seen].sort() }));
+  // Separate from the card fingerprint: phase, clock, thread activity and
+  // upstream lookup do not represent changed verification inputs.
+  try {
+    if (!head || dirtyDiff === null || status === null || s.profile === 'invalid') throw new Error('Unknown Git inputs');
+    const [others, index] = await Promise.all([
+      git(root, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.'], signal, false),
+      git(root, ['ls-files', '--stage', '-z', '--', '.'], signal, false),
+    ]);
+    if (others === null || index === null || /(?:^|\x00)160000 /.test(index)) throw new Error('Unknown inputs or submodules');
+    const untracked = others.split('\0').filter(Boolean).sort();
+    if (untracked.length > MAX_FILES) throw new Error('Too many untracked files');
+    const extra = new Reader(root);
+    let bytes = 0;
+    for (const filename of untracked) {
+      const absolute = await extra.resolve(filename);
+      const stat = await fs.stat(absolute);
+      bytes += stat.size;
+      if (!stat.isFile() || stat.size > MAX_FILE || bytes > 32 * MAX_FILE) throw new Error('Untracked inputs exceed limit');
+      extra.seen.set(filename, hash(await fs.readFile(absolute)));
+    }
+    s.inputsFingerprint = hash(JSON.stringify({ root, runtime: s.runtime, profile: s.profile, target: s.target?.path,
+      versions: s.versions, head, branch, dirty: hash(dirtyDiff), status, index: hash(index),
+      files: [...read.seen].sort(), untracked: [...extra.seen].sort() }));
+  } catch { s.inputsFingerprint = null; }
+  s.fingerprint = hash(JSON.stringify([s.fingerprint, s.inputsFingerprint]));
   s.actions = workflowActions(s);
   return snapshotSchema.parse(s);
 }

@@ -8,10 +8,11 @@ export const requestSchema = z.object({
 }).strict();
 export const actionSchema = z.object({
   id: z.string(), label: z.string(), command: z.string(), group: z.enum(['next', 'check', 'setup', 'maintenance']),
-  reason: z.string(), available: z.boolean(),
+  reason: z.string(), available: z.boolean(), disabledReason: z.literal('unchanged').optional(),
 });
 export const snapshotSchema = z.object({
   schemaVersion: z.literal('aif-chat/v1'), collectedAt: z.string(), fingerprint: z.string(),
+  inputsFingerprint: z.string().length(64).nullable().default(null),
   root: z.string(), runtime: z.string(), configured: z.boolean(),
   profile: z.enum(['none', 'upstream', 'aifhub-classic', 'aifhub-openspec', 'aifhub-ultra', 'invalid']),
   threadState: z.string(),
@@ -28,7 +29,8 @@ export const snapshotSchema = z.object({
   checks: z.array(z.object({ id: z.string(), label: z.string(), state: z.enum(['notrun', 'reported-pass', 'warn', 'fail', 'unknown']),
     detail: z.string(), path: z.string().nullable(), required: z.boolean(),
     chat: z.object({ seq: z.number(), at: z.string(), target: z.string(),
-      result: z.lazy(() => gateResultSchema), freshness: z.literal('unknown') }).optional() })),
+      result: z.lazy(() => gateResultSchema), freshness: z.enum(['unknown', 'unchanged', 'changed']),
+      inputFingerprint: z.string().length(64).optional(), observedAt: z.string().optional() }).optional() })),
   actions: z.array(actionSchema), diagnostics: z.array(z.string()),
 });
 export type Snapshot = z.infer<typeof snapshotSchema>;

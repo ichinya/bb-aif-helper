@@ -3,6 +3,7 @@ import { definePluginApp, useRpc, useRealtime, useComposer, type PluginMessageDi
 import type { rpcContract } from './contract.ts';
 import { phaseSchema, type Snapshot, type Phase, type Action, type Suggestions } from './model.ts';
 import { parseReplyGate } from './gate.ts';
+import { rowActions } from './check-actions.ts';
 import './aif-chat.css';
 
 const phaseNames: Record<Phase, string> = { unknown: 'Контекст задачи', explore: 'Исследование', plan: 'Планирование', improve: 'Уточнение плана', implement: 'Выполнение плана', verify: 'Проверка', fix: 'Исправление замечаний', done: 'Финализация' };
@@ -65,9 +66,10 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
   const busy = !!snapshot && !['idle', 'error'].includes(snapshot.threadState);
   const tasks = snapshot?.target?.tasks ?? [];
   const completed = tasks.filter(t => t.done).length;
-  const renderActions = (actions: Action[]) => <div className="aif-actions">{actions.map(a => <button key={a.id} type="button"
+  const renderAction = (a: Action) => <button key={a.id} type="button"
     className={a.group === 'next' ? 'aif-action' : 'aif-action aif-secondary'} disabled={sending || busy || !a.available}
-    title={`${a.reason}\n${a.command}`} onClick={() => void run(a)}>{a.label}{!a.available && ' · не установлен'}</button>)}</div>;
+    title={`${a.reason}\n${a.command}`} onClick={() => void run(a)}>{a.label}{!a.available && (a.disabledReason === 'unchanged' ? ' · без изменений' : ' · не установлен')}</button>;
+  const renderActions = (actions: Action[]) => <div className="aif-actions">{actions.map(renderAction)}</div>;
   return <section className={`aif-card${compact ? ' aif-compact' : ''}`} aria-label="AI Factory workflow">
     <header className="aif-heading"><strong><span aria-hidden="true">◈</span> AI Factory</strong>
       {snapshot && <span className="aif-profile">{profileNames[snapshot.profile]}</span>}
@@ -98,13 +100,15 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
         <p className="aif-muted aif-small">Галочки задач и результаты проверок независимы. Актуальность evidence подтверждает владелец workflow.</p>
         <ul>{snapshot.checks.map(c => <li key={c.id}><div><strong>{c.label}</strong>{c.required && <small className="aif-required">нужно для завершения</small>}</div>
           <span className={`aif-check-state aif-${c.chat ? c.chat.result.status === 'pass' ? 'reported-pass' : c.chat.result.status : c.state}`} title={c.detail}>{c.chat ? `${c.chat.result.status.toUpperCase()} · из чата` : checkLabels[c.state]}</span>
+          {snapshot.actions.filter(a => a.id === rowActions[c.id]).map(renderAction)}
           {c.path && openFile && <button className="aif-link" onClick={() => { if (!openFile(c.path!)) setError('Просмотр файла недоступен в этой поверхности.'); }}>Отчёт</button>}
-          {c.chat && <small className="aif-check-detail">Gate завершён · {new Date(c.chat.at).toLocaleString('ru')} · сообщение #{c.chat.seq}. Актуальность для текущих файлов не подтверждена.
+          {c.chat && <small className="aif-check-detail">Gate завершён · {new Date(c.chat.at).toLocaleString('ru')} · сообщение #{c.chat.seq}. {c.chat.freshness === 'unchanged'
+            ? 'С момента фиксации результата файлы не изменились. Повторная проверка заблокирована.'
+            : c.chat.freshness === 'changed' ? 'Файлы изменились после фиксации результата; можно проверить повторно.' : 'Актуальность для текущих файлов не подтверждена.'}
             {c.chat.result.blocking ? ' Есть блокирующие проблемы.' : ' Блокеров нет.'}
             {c.chat.result.blockers.map(b => <span key={b.id}>{` ${b.id}: ${b.summary}${b.file ? ` (${b.file})` : ''}`}</span>)}
             {c.chat.result.suggested_next?.reason && <span>{` ${c.chat.result.suggested_next.reason}`}</span>}</small>}
           <small className="aif-check-detail">{c.chat ? `Файловый отчёт: ${c.path ? checkLabels[c.state] + '. ' + c.detail : 'не найден.'}` : c.detail}</small></li>)}</ul>
-        {renderActions(snapshot.actions.filter(a => a.group === 'check'))}
         <details className="aif-setup"><summary>Настройка инструментов</summary>{renderActions(snapshot.actions.filter(a => a.group === 'setup'))}</details>
       </details>}
       <details className="aif-details"><summary>Версии и расширения{snapshot.extensions.length ? ` · ${snapshot.extensions.length}` : ''}</summary>

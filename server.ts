@@ -7,11 +7,14 @@ import { actionPrompt } from './workflow.ts';
 import { analyzeReply } from './suggestions.ts';
 import { blockedByGate } from './gate.ts';
 import { attachChatChecks, readChatChecks, type ChatCheck } from './check-history.ts';
+import { lockUnchangedChecks, unchangedCheck, unchangedReason } from './check-actions.ts';
 export { rpcContract } from './contract.ts';
 type Selection = { environmentId: string; target: string; phase: Phase };
 type Delivery = { requestId: string; fingerprint: string; actionId: string; state: 'attempting' | 'sent' | 'uncertain'; at: number };
 type DismissedSuggestions = { sourceKey: string; ids: string[] };
 const suggestionSource = (root: string, output: string | null) => createHash('sha256').update(JSON.stringify([root, output])).digest('hex');
+const chatStorageKey = (threadId: string, environmentId: string, hostId: string, root: string) =>
+  `chat-checks:${threadId}:${environmentId}:${createHash('sha256').update(JSON.stringify([hostId, root])).digest('hex')}`;
 const commandInput = (command: string, context: string) => [
   { type: 'text' as const, text: command, mentions: [] },
   { type: 'text' as const, text: context, mentions: [], visibility: 'agent-only' as const },
@@ -35,7 +38,7 @@ export default async function plugin(bb: BbPluginApi) {
   const cache = new Map<string, { at: number; value: Snapshot }>();
   const histories = new Map<string, { at: number; records: ChatCheck[] }>();
   async function chatChecks(threadId: string, environmentId: string, hostId: string, snapshot: Snapshot) {
-    if (!snapshot.target) return;
+    if (!snapshot.candidates.length) return;
     const key = JSON.stringify([threadId, environmentId, hostId, snapshot.root, snapshot.candidates.map(c => c.path)]);
     let history = histories.get(key);
     if (!history || Date.now() - history.at > 15000) {
@@ -49,16 +52,19 @@ export default async function plugin(bb: BbPluginApi) {
           if (batch.length < 100) break;
           beforeSeq = String(Math.min(...batch.map(row => row.seq)));
         }
-        const storageKey = `chat-checks:${threadId}:${environmentId}:${createHash('sha256').update(JSON.stringify([hostId, snapshot.root])).digest('hex')}`;
-        const saved = await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [];
-        const records = [...saved, ...readChatChecks(rows, snapshot.candidates.map(c => c.path))];
-        const latest = new Map<string, ChatCheck>();
-        for (const record of records) {
-          const id = `${record.target}:${record.result.gate}`;
-          if ((latest.get(id)?.seq ?? -1) < record.seq) latest.set(id, record);
-        }
-        history = { at: Date.now(), records: [...latest.values()].slice(-200) };
-        await bb.storage.kv.set(storageKey, history.records);
+        const storageKey = chatStorageKey(threadId, environmentId, hostId, snapshot.root);
+        history = await serial(`history:${storageKey}`, async () => {
+          const saved = await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [];
+          const records = [...saved, ...readChatChecks(rows, snapshot.candidates.map(c => c.path))];
+          const latest = new Map<string, ChatCheck>();
+          for (const record of records) {
+            const id = `${record.target}:${record.result.gate}`;
+            if ((latest.get(id)?.seq ?? -1) < record.seq) latest.set(id, record);
+          }
+          const value = { at: Date.now(), records: [...latest.values()].slice(-200) };
+          await bb.storage.kv.set(storageKey, value.records);
+          return value;
+        });
         if (histories.size > 100) histories.clear();
         histories.set(key, history);
       } catch (error) {
@@ -109,6 +115,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (snapshot.pendingQuestions > 0) snapshot.threadState = 'awaiting_input';
     } catch { snapshot.pendingQuestions = null; }
     await chatChecks(input.threadId, environment.id, environment.hostId, snapshot);
+    lockUnchangedChecks(snapshot);
     return snapshot;
   }
   async function show(input: CardRequest) {
@@ -132,8 +139,8 @@ export default async function plugin(bb: BbPluginApi) {
     const prefix = ['codex', 'codex-app'].includes(snapshot.runtime) ? '$' : '/';
     const view: Suggestions = { sourceKey, fingerprint: snapshot.fingerprint, threadState: snapshot.threadState, gate: reply.gate, gateError: reply.error,
       items: ids.filter(id => !hidden.includes(id)).map(id => ({ id, command: `${prefix}${id}`,
-        available: !reply.error && !blockedByGate(id, reply.gate) && snapshot.profile !== 'invalid' && (snapshot.skills.includes(id) || id === 'aif-chat'),
-        reason: reply.error ?? (blockedByGate(id, reply.gate) ? 'Gate содержит блокирующие проблемы.' : snapshot.profile === 'invalid' ? 'Проверьте конфигурацию проекта.' : !(snapshot.skills.includes(id) || id === 'aif-chat') ? `Skill не установлен для ${snapshot.runtime}` : reply.next === id ? reply.gate?.suggested_next?.reason ?? 'Следующий шаг из gate' : 'Команда из последнего ответа агента'),
+        available: !reply.error && !blockedByGate(id, reply.gate) && !unchangedCheck(snapshot, id) && snapshot.profile !== 'invalid' && (snapshot.skills.includes(id) || id === 'aif-chat'),
+        reason: reply.error ?? (blockedByGate(id, reply.gate) ? 'Gate содержит блокирующие проблемы.' : unchangedCheck(snapshot, id) ? unchangedReason : snapshot.profile === 'invalid' ? 'Проверьте конфигурацию проекта.' : !(snapshot.skills.includes(id) || id === 'aif-chat') ? `Skill не установлен для ${snapshot.runtime}` : reply.next === id ? reply.gate?.suggested_next?.reason ?? 'Следующий шаг из gate' : 'Команда из последнего ответа агента'),
       })) };
     return { view, ids, hidden, snapshot };
   }
@@ -187,7 +194,9 @@ export default async function plugin(bb: BbPluginApi) {
       if (deliveries.some(d => d.state !== 'sent')) throw new Error('Есть отправка с неизвестным исходом. Проверьте чат и явно сбросьте её через bb plugin run aif-chat reset-dispatch.');
       const current = await status(input, false, true);
       if (current.fingerprint !== input.fingerprint) throw new Error('Карточка устарела. Обновите её и проверьте выбранную задачу.');
-      const action = current.actions.find(a => a.id === input.actionId && a.available);
+      const candidate = current.actions.find(a => a.id === input.actionId);
+      if (candidate?.disabledReason === 'unchanged') throw new Error(unchangedReason);
+      const action = candidate?.available ? candidate : undefined;
       if (!action) throw new Error('Действие недоступно для текущего плана/runtime.');
       const skill = action.command.match(/^[/$](aif(?:-[a-z0-9]+)*)\b/)?.[1];
       if (skill && ['aif-commit', 'aif-done', 'aif-archive', 'aif-implement'].includes(skill)) {
@@ -261,6 +270,37 @@ export default async function plugin(bb: BbPluginApi) {
     for (const key of histories.keys()) if (key.includes(thread.id)) histories.delete(key);
     for (const key of cache.keys()) if (key.includes(thread.id)) cache.delete(key);
     bb.realtime.publish('changed', { threadId: thread.id });
+  });
+  bb.events.on('thread.idle', async ({ thread, lastAssistantText }) => {
+    const reply = analyzeReply(lastAssistantText ?? '');
+    if (!enabled || !reply.gate || reply.error) return;
+    // Only a live completion can establish a comparison baseline. Loading an
+    // old report must never silently bind it to today's files.
+    try {
+      const { environment } = await context(thread.id);
+      let snapshot = await status({ threadId: thread.id, target: '', phase: 'unknown' }, false, true);
+      const storageKey = chatStorageKey(thread.id, environment.id, environment.hostId, snapshot.root);
+      const records = await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [];
+      const record = records.filter(r => JSON.stringify(r.result) === JSON.stringify(reply.gate))
+        .sort((a, b) => b.seq - a.seq)[0];
+      const age = record ? Date.now() - Date.parse(record.at) : Infinity;
+      if (!record || record.inputFingerprint || age < 0 || age > 60000) return;
+      if (snapshot.target?.path !== record.target) snapshot = await status({ threadId: thread.id, target: record.target, phase: 'unknown' }, false, true);
+      const current = await context(thread.id);
+      if (current.environment.id !== environment.id || current.environment.path !== snapshot.root || current.environment.hostId !== environment.hostId
+        || snapshot.target?.path !== record.target || current.thread.status !== 'idle' || current.thread.queuedMessageCount || current.thread.activeBackgroundAgentCount || !snapshot.inputsFingerprint) return;
+      await serial(`history:${storageKey}`, async () => {
+        const latest = await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [];
+        const found = latest.find(r => r.seq === record.seq && r.target === record.target);
+        if (found && !found.inputFingerprint) {
+          found.inputFingerprint = snapshot.inputsFingerprint!;
+          found.observedAt = snapshot.collectedAt;
+          await bb.storage.kv.set(storageKey, latest);
+        }
+      });
+      for (const key of histories.keys()) if (key.includes(thread.id)) histories.delete(key);
+      bb.realtime.publish('changed', { threadId: thread.id });
+    } catch { bb.log.warn('Could not bind completed gate to workspace inputs; repeat checks remain available.'); }
   });
   bb.events.on('thread.deleted', async ({ thread }) => {
     await bb.storage.kv.delete(`selection:${thread.id}`); await bb.storage.kv.delete(`deliveries:${thread.id}`);

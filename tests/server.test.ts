@@ -28,6 +28,58 @@ async function setup() {
 }
 function runInput(fingerprint = 'a'.repeat(64)) { return { threadId: 'thr_test', target: '.ai-factory/plans/demo.md', phase: 'plan', fingerprint, actionId: 'improve', requestId: randomUUID() }; }
 
+test('a live completed gate blocks unchanged checks across reload and re-enables them after input changes', async () => {
+  const h = await setup(); let live = h.harness;
+  try {
+    h.value.inputsFingerprint = 'c'.repeat(64);
+    h.value.checks = [{ id: 'verify', label: 'Verify', state: 'notrun', path: null, detail: 'Missing', required: false }];
+    const text = gateText({ affected_files: ['.ai-factory/plans/demo.md'] });
+    h.setEvents([{ seq: 31, createdAt: Date.now(), type: 'item/completed', data: { item: { type: 'agentMessage', text } } }]);
+    const historical = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(historical.checks[0].chat.freshness, 'unknown');
+    await live.behavior.emitThreadEvent('thread.idle', { thread: makeThreadResponse({ id: 'thr_test' }), lastAssistantText: text });
+    const done = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(done.checks[0].chat.freshness, 'unchanged');
+    assert.equal(done.actions.find((a: any) => a.id === 'check-verify').disabledReason, 'unchanged');
+    await assert.rejects(live.behavior.callRpc('run', { ...runInput(), actionId: 'check-verify' }));
+    h.setOutput('$aif-verify');
+    const suggestion = await live.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(suggestion.items[0].available, false);
+    await assert.rejects(live.behavior.callRpc('runSuggestion', suggestionInput(suggestion, 'aif-verify')));
+    live = (await live.lifecycle.reload(plugin)).harness;
+    const restored = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(restored.checks[0].chat.freshness, 'unchanged');
+    h.value.inputsFingerprint = 'd'.repeat(64); h.value.fingerprint = 'd'.repeat(64);
+    await live.behavior.emitThreadEvent('thread.active', { thread: makeThreadResponse({ id: 'thr_test' }) });
+    const changed = await live.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(changed.checks[0].chat.freshness, 'changed');
+    assert.equal(changed.actions.find((a: any) => a.id === 'check-verify').available, true);
+    // A duplicate idle announcement cannot rebind an old result to the new inputs.
+    await live.behavior.emitThreadEvent('thread.idle', { thread: makeThreadResponse({ id: 'thr_test' }), lastAssistantText: text });
+    await live.behavior.callRpc('run', { ...runInput('d'.repeat(64)), actionId: 'check-verify' });
+    assert.equal(h.sends, 1);
+  } finally { await live.lifecycle.dispose(); }
+});
+
+test('old results and unavailable input hashes never lock repeat checks', async () => {
+  const h = await setup(); try {
+    h.value.inputsFingerprint = 'c'.repeat(64);
+    h.value.checks = [{ id: 'verify', label: 'Verify', state: 'notrun', path: null, detail: '', required: false }];
+    const text = gateText({ affected_files: ['.ai-factory/plans/demo.md'] });
+    h.setEvents([{ seq: 7, createdAt: Date.now() - 120000, type: 'item/completed', data: { item: { type: 'agentMessage', text } } }]);
+    await h.harness.behavior.emitThreadEvent('thread.idle', { thread: makeThreadResponse({ id: 'thr_test' }), lastAssistantText: text });
+    const s = await h.harness.behavior.callRpc('status', { threadId: 'thr_test' }) as any;
+    assert.equal(s.checks[0].chat.freshness, 'unknown');
+    assert.equal(s.actions.find((a: any) => a.id === 'check-verify').available, true);
+    h.value.inputsFingerprint = null;
+    h.setEvents([{ seq: 8, createdAt: Date.now(), type: 'item/completed', data: { item: { type: 'agentMessage', text } } }]);
+    await h.harness.behavior.emitThreadEvent('thread.idle', { thread: makeThreadResponse({ id: 'thr_test' }), lastAssistantText: text });
+    await h.harness.behavior.emitThreadEvent('thread.active', { thread: makeThreadResponse({ id: 'thr_test' }) });
+    await h.harness.behavior.callRpc('run', { ...runInput(), actionId: 'check-verify' });
+    assert.equal(h.sends, 1);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
 test('status restores completed verify from chat, persists across reload and does not invent file evidence', async () => {
   const h = await setup(); let live = h.harness;
   try {

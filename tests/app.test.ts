@@ -4,6 +4,7 @@ import { registerHooks } from 'node:module';
 import { JSDOM } from 'jsdom';
 import { snapshot } from './fixtures.ts';
 import { workflowActions } from '../workflow.ts';
+import { lockUnchangedChecks } from '../check-actions.ts';
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
 for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Element', 'Node', 'MutationObserver', 'getComputedStyle']) Object.defineProperty(globalThis, key, { configurable: true, value: (dom.window as any)[key] });
@@ -15,6 +16,25 @@ const { fireEvent, waitFor } = await import('@testing-library/react');
 const app = await loadPluginApp(() => import('../app.tsx'));
 const props = { attributes: { phase: 'plan' }, source: '::aif-chat{phase="plan"}', message: { id: 'msg_1', threadId: 'thr_test', turnId: 'turn_1', projectId: 'proj_test' }, openWorkspaceFile: null };
 function data() { const s = snapshot(); s.actions = workflowActions(s); return s; }
+
+test('check buttons belong to their rows and unchanged checks show an accurate disabled reason', async () => {
+  const s = data(); s.checks = ['verify', 'security'].map(id => ({ id, label: id === 'verify' ? 'Соответствие плану' : 'Безопасность', state: 'notrun', detail: '', path: null, required: false }));
+  s.checks[0].chat = { seq: 1, at: s.collectedAt, target: s.target!.path, freshness: 'unchanged', inputFingerprint: 'a'.repeat(64),
+    result: { schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: [], suggested_next: null } };
+  lockUnchangedChecks(s);
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s } });
+  try {
+    const verify = await slot.findByRole('button', { name: 'Соответствие плану · без изменений', hidden: true });
+    const security = slot.getByRole('button', { name: 'Безопасность', hidden: true });
+    assert(verify.closest('li')?.textContent?.includes('Соответствие плану'));
+    assert(security.closest('li')?.textContent?.includes('Безопасность'));
+    assert.equal((verify as HTMLButtonElement).disabled, true);
+    assert.equal((security as HTMLButtonElement).disabled, false);
+    assert.match(verify.getAttribute('title')!, /не изменились/);
+    assert(!verify.textContent?.includes('не установлен'));
+    assert.equal(slot.queryAllByRole('button', { name: 'Соответствие плану · без изменений', hidden: true }).length, 1);
+  } finally { slot.lifecycle.unmount(); }
+});
 
 test('only gate JSON gets a collapsed renderer; original code remains available unchanged', () => {
   const renderer = app.codeFenceRenderers.find(r => r.id === 'gate-data')!;

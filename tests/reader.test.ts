@@ -2,9 +2,35 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { collectSnapshot, parseYaml, safeRelative, taskList, lastGate } from '../reader.ts';
 import { fixture } from './fixtures.ts';
 const input = (root: string, target = '') => ({ root, target, phase: 'plan' as const, runtime: 'codex-app', sourceRepo: '', checkUpdates: false, upstreamRepo: 'lee-to/ai-factory', upstreamRef: '' });
+
+test('check input fingerprint ignores phase, detects tracked and untracked byte changes, and fails open on limits', async () => {
+  const f = await fixture();
+  const exec = promisify(execFile);
+  const git = (args: string[]) => exec('git', ['-C', f.root, ...args], { windowsHide: true, timeout: 5000 });
+  try {
+    await f.write('.ai-factory/plans/demo.md', '# Demo\n- [ ] Work');
+    await f.write('source.ts', 'one');
+    await git(['init', '--quiet']); await git(['add', '.']);
+    await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture']);
+    const original = await collectSnapshot(input(f.root)); assert(original.inputsFingerprint);
+    const phase = await collectSnapshot({ ...input(f.root), phase: 'verify' });
+    assert.equal(original.inputsFingerprint, phase.inputsFingerprint); assert.notEqual(original.fingerprint, phase.fingerprint);
+    await f.write('source.ts', 'two');
+    const changed = await collectSnapshot(input(f.root)); assert.notEqual(original.inputsFingerprint, changed.inputsFingerprint);
+    await fs.writeFile(path.join(f.root, 'new.bin'), Buffer.from([255]));
+    const untracked = await collectSnapshot(input(f.root)); assert(untracked.inputsFingerprint);
+    await fs.writeFile(path.join(f.root, 'new.bin'), Buffer.from([254]));
+    const changedUntracked = await collectSnapshot(input(f.root)); assert.notEqual(untracked.inputsFingerprint, changedUntracked.inputsFingerprint);
+    assert.notEqual(untracked.fingerprint, changedUntracked.fingerprint);
+    await fs.writeFile(path.join(f.root, 'large.bin'), Buffer.alloc(1024 * 1024 + 1));
+    assert.equal((await collectSnapshot(input(f.root))).inputsFingerprint, null);
+  } finally { await f.cleanup(); }
+});
 test('artifact paths reject escapes, drive paths, git administration and null bytes', () => {
   for (const s of ['../secret', 'a/../secret', 'C:/x', '/x', '.git/config', 'a\u0000b', 'x//y']) assert.throws(() => safeRelative(s));
   assert.equal(safeRelative('.ai-factory\\plans\\one.md'), '.ai-factory/plans/one.md');
