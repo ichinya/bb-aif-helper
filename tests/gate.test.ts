@@ -5,6 +5,14 @@ import { analyzeReply } from '../suggestions.ts';
 
 export const gateBlock = (gate: object) => '```aif-gate-result\n' + JSON.stringify(gate) + '\n```';
 export const warnGate = { schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: ['src/demo.ts'], suggested_next: { command: '/aif-commit', reason: 'Only non-blocking warnings remain.' } };
+
+test('PASS accepts an explanation with a null command without inventing an action', () => {
+  const payload = { ...warnGate, gate: 'rules', status: 'pass', suggested_next: { command: null, reason: 'No explicit rule violations or rule updates required.' } };
+  const reply = analyzeReply(gateBlock(payload));
+  assert.equal(reply.error, null); assert.equal(reply.gate?.status, 'pass'); assert.deepEqual(reply.ids, []);
+  assert.deepEqual(reply.gate?.suggested_next, payload.suggested_next);
+  for (const command of ['/aif-rules', '', ' ']) assert(analyzeReply(gateBlock({ ...payload, suggested_next: { command, reason: 'Not an explanation-only result.' } })).error);
+});
 test('non-blocking verify WARN extracts the slash recommendation and its reason', () => {
   const reply = analyzeReply(gateBlock(warnGate));
   assert.equal(reply.error, null); assert.equal(reply.gate?.status, 'warn');

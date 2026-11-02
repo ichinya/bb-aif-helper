@@ -11,6 +11,14 @@ function reply(seq: number, gate = 'verify', files = [target], status = 'warn'):
 function request(seq: number, text: string): ThreadEventRow {
   return { seq, type: 'client/turn/requested', data: { input: [{ type: 'text', text }] } } as ThreadEventRow;
 }
+
+test('rules PASS with a null-command explanation is retained in check history', () => {
+  const row = reply(10, 'rules', [target], 'pass');
+  if (row.type === 'item/completed' && row.data.item.type === 'agentMessage') row.data.item.text = row.data.item.text.replace('"suggested_next":null', '"suggested_next":{"command":null,"reason":"No rule updates required."}');
+  const checks = readChatChecks([row], [target]);
+  assert.equal(checks.length, 1); assert.equal(checks[0].result.status, 'pass');
+  assert.equal(checks[0].result.suggested_next?.command, null);
+});
 test('completed verify WARN is restored from history and survives later rules result', () => {
   const records = readChatChecks([reply(4, 'rules'), reply(2), request(1, `$aif-verify "@${target}"`)], [target]);
   const s = snapshot({ checks: ['verify', 'rules'].map(id => ({ id, label: id, state: 'notrun', detail: 'Missing', path: null, required: false })) });

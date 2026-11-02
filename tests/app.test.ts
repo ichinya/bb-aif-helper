@@ -170,6 +170,21 @@ test('AIFHub context button is analyze and obeys busy-state disabling', async ()
 
 function suggestedData() { return { sourceKey: 'c'.repeat(64), fingerprint: 'a'.repeat(64), threadState: 'idle', items: ['aif-architecture', 'aif-roadmap'].map(id => ({ id, command: `$${id}`, available: true, reason: 'Из последнего ответа' })) }; }
 const banner = app.composerCustomizations.find(c => c.id === 'suggested-commands')!.banners![0];
+
+test('PASS with a null command renders without an error and labels its reason as explanation', async () => {
+  const gate = { schema_version: 1, gate: 'rules', status: 'pass', blocking: false, blockers: [], affected_files: [],
+    suggested_next: { command: null, reason: 'No explicit rule violations or rule updates required.' } };
+  const fence = renderSlot(app.codeFenceRenderers[0], { code: JSON.stringify(gate), language: 'aif-gate-result', status: 'closed', index: 0, message: props.message, Original: () => JSON.stringify(gate) });
+  try { fence.getByText('Данные gate · rules · PASS'); assert.equal(fence.queryByRole('alert'), null); }
+  finally { fence.lifecycle.unmount(); }
+  const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' } },
+    rpc: { suggestions: () => ({ ...suggestedData(), items: [], gateError: null, gate }) } });
+  try {
+    await slot.findByText('rules · PASS в ответе'); slot.getByText('Пояснение:');
+    assert.equal(slot.queryByText('Следующий шаг:'), null); assert.equal(slot.queryByRole('alert'), null);
+    assert.equal(slot.queryByText('Из ответа агента'), null);
+  } finally { slot.lifecycle.unmount(); }
+});
 test('composer suggestions have a separate dismiss control and never dispatch during discovery or removal', async () => {
   assert.deepEqual(app.composerCustomizations.find(c => c.id === 'suggested-commands')!.scopes, ['thread']);
   let current = suggestedData(); let sends = 0;

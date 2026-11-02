@@ -298,6 +298,15 @@ test('a last answer changing during project inspection cannot dispatch an old co
 });
 
 const gateText = (patch: object = {}) => '```aif-gate-result\n' + JSON.stringify({ schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: ['src/demo.ts'], suggested_next: { command: '/aif-commit', reason: 'Only non-blocking warnings remain.' }, ...patch }) + '\n```';
+
+test('rules PASS with explanation and no command is accepted by suggestions RPC without dispatch', async () => {
+  const h = await setup(); try {
+    h.setOutput(gateText({ gate: 'rules', status: 'pass', suggested_next: { command: null, reason: 'No explicit rule violations or rule updates required.' } }));
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(view.gateError, null); assert.equal(view.gate.status, 'pass');
+    assert.equal(view.gate.suggested_next.command, null); assert.deepEqual(view.items, []); assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
 test('structured gate next step becomes a runtime-correct suggestion, with the reason and gate context', async () => {
   const h = await setup(); try {
     h.setOutput(gateText());

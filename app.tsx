@@ -181,7 +181,7 @@ function SuggestionBar({ threadId, composerBusy }: { threadId: string; composerB
       {data.gate && <><div className="aif-message-gate-heading"><strong>{data.gate.gate} · {data.gate.status.toUpperCase()} в ответе</strong><span>{data.gate.blocking ? 'Блокирует следующий этап' : 'Не блокирует'}</span></div>
         <p className="aif-muted aif-small">Заявленный результат из чата. Актуальность evidence для текущих inputs проверяет владелец workflow.</p>
         {data.gate.blockers.length ? <details open><summary>Блокирующие проблемы · {data.gate.blockers.length}</summary><ul>{data.gate.blockers.map((b, i) => <li key={`${b.id}-${i}`}><strong>{b.id}</strong> <span className="aif-muted">· {b.severity}</span><p>{b.summary}</p>{b.file && <code>{b.file}</code>}</li>)}</ul></details> : <p className="aif-small">Блокирующих проблем нет.</p>}
-        {data.gate.suggested_next?.reason && <p className="aif-small"><strong>Следующий шаг: </strong>{data.gate.suggested_next.reason}</p>}
+        {data.gate.suggested_next?.reason && <p className="aif-small"><strong>{data.gate.suggested_next.command ? 'Следующий шаг: ' : 'Пояснение: '}</strong>{data.gate.suggested_next.reason}</p>}
         {!!data.gate.affected_files.length && <details><summary>Затронутые файлы · {data.gate.affected_files.length}</summary><ul>{data.gate.affected_files.map((file, i) => <li key={i}><code>{file}</code></li>)}</ul></details>}
       </>}
       {data.gateError && <p className="aif-error" role="alert">Некорректный gate: {data.gateError}</p>}

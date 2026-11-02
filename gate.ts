@@ -49,7 +49,7 @@ export function parseReplyGate(text: string): { gate: GateResult | null; error: 
   if (gate.blocking !== (gate.status === 'fail') || (gate.status === 'fail' ? !gate.blockers.length : !!gate.blockers.length)) {
     return result(gate, 'Противоречивые status, blocking и blockers. Следующий шаг не подтверждён.');
   }
-  if (gate.status === 'pass' && gate.suggested_next !== null) return result(gate, 'При PASS suggested_next должен быть null; следующий шаг указывается в тексте ответа.');
+  if (gate.status === 'pass' && gate.suggested_next?.command != null) return result(gate, 'При PASS suggested_next.command должен быть null; следующий шаг указывается в тексте ответа.');
   const next = gate.suggested_next?.command;
   if (next && (!allowed[gate.gate].includes(next) || blockedByGate(next.slice(1), gate))) {
     return result(gate, 'suggested_next.command недопустим для этого gate или обходит блокирующие проблемы.');
