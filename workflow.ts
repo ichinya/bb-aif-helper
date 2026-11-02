@@ -2,7 +2,6 @@ import type { Action, Snapshot } from './model.ts';
 
 /** Routing is presentation. The selected skill remains the owner of execution/readiness. */
 export function workflowActions(s: Snapshot): Action[] {
-  if (s.profile === 'invalid') return [];
   const result: Action[] = [];
   const prefix = s.runtime === 'codex' || s.runtime === 'codex-app' ? '$' : '/';
   const hub = s.profile.startsWith('aifhub-');
@@ -15,6 +14,9 @@ export function workflowActions(s: Snapshot): Action[] {
       reason: s.skills.includes(contextSkill) ? installedHub ? 'Настроить контекст проекта через AIFHub analyze' : 'Настроить контекст проекта через AI Factory' : `Сначала установите ${contextSkill} для ${s.runtime}`,
       available: s.skills.includes(contextSkill) },
   ];
+  // Maintenance can repair an outdated installation even when a selected plan
+  // or workflow configuration cannot be resolved. Other actions stay blocked.
+  if (s.profile === 'invalid') return maintenance.filter(action => action.id === 'update-factory');
   if (!s.configured) return maintenance;
   const arg = s.target ? ` ${JSON.stringify(s.target.kind === 'openspec' || s.target.kind === 'classic' ? s.target.id : '@' + s.target.path)}` : '';
   const add = (id: string, label: string, skill: string, group: Action['group'], reason: string, target = arg) => {

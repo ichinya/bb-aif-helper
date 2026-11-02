@@ -31,6 +31,17 @@ async function setup() {
 }
 function runInput(fingerprint = 'a'.repeat(64)) { return { threadId: 'thr_test', target: '.ai-factory/plans/demo.md', phase: 'plan', fingerprint, actionId: 'improve', requestId: randomUUID() }; }
 
+test('invalid selection exposes a guarded updater RPC without enabling ordinary workflow', async () => {
+  const h = await setup(); try {
+    h.value = { ...h.value, profile: 'invalid', target: null };
+    const value = await h.harness.behavior.callRpc('status', { threadId: 'thr_test', phase: 'plan', force: true }) as any;
+    assert.deepEqual(value.actions.map((a: any) => a.id), ['update-factory']);
+    await assert.rejects(h.harness.behavior.callRpc('run', runInput()));
+    await h.harness.behavior.callRpc('run', { ...runInput(), actionId: 'update-factory' });
+    assert.equal(h.sends, 1);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
 test('cards with different phases share a scan; force and action dispatch still re-read the host', async () => {
   const h = await setup(); try {
     const [plan, verify] = await Promise.all([

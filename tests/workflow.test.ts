@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import { workflowActions, actionPrompt } from '../workflow.ts';
 import { snapshot } from './fixtures.ts';
 
+test('invalid plan/config keeps the installation updater while blocking workflow and setup', () => {
+  const actions = workflowActions(snapshot({ profile: 'invalid', target: null }));
+  assert.deepEqual(actions.map(a => a.id), ['update-factory']); assert.equal(actions[0].available, true);
+  assert.match(actionPrompt(snapshot({ profile: 'invalid' }), actions[0]), /Не запускай реализацию/);
+});
+
 test('upstream explore offers plan and direct bug fix; AIFHub does not offer fix without findings', () => {
   const base = snapshot({ target: null, candidates: [], phase: 'explore' });
   assert(workflowActions(base).some(a => a.id === 'fix-new'));

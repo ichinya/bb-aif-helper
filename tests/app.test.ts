@@ -17,6 +17,16 @@ const app = await loadPluginApp(() => import('../app.tsx'));
 const props = { attributes: { phase: 'plan' }, source: '::aif-chat{phase="plan"}', message: { id: 'msg_1', threadId: 'thr_test', turnId: 'turn_1', projectId: 'proj_test' }, openWorkspaceFile: null };
 function data() { const s = snapshot(); s.actions = workflowActions(s); return s; }
 
+test('configuration errors do not hide the installation update button', async () => {
+  const s = snapshot({ profile: 'invalid', target: null, diagnostics: ['Выбранный план/change не найден в допустимых артефактах.'] }); s.actions = workflowActions(s);
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s } });
+  try {
+    assert.equal((await slot.findByRole('button', { name: 'Обновить AI Factory' }) as HTMLButtonElement).disabled, false);
+    assert.equal(slot.queryByRole('button', { name: 'Выполнить план' }), null);
+    assert.equal(slot.queryByRole('button', { name: 'Запустить aif' }), null);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('saved-data state is visible and the refresh button explicitly bypasses the cache', async () => {
   const s = data(); s.cache = { source: 'saved', refreshing: true, refreshError: false };
   const requests: any[] = [];
