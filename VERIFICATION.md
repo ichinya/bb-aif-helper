@@ -1,11 +1,11 @@
-# Проверка AI Factory Chat 0.1.3
+# Проверка AI Factory Chat 0.2.0
 
 Проверено 2 ноября 2026 года на Windows, BB Plugin SDK 0.6.104.
 
 ## Автоматические проверки
 
 - TypeScript: `node node_modules/typescript/bin/tsc --noEmit`.
-- Fixture и SDK tests: `npm test` — 55 passed, 0 failed, 0 skipped.
+- Fixture и SDK tests: `npm test` — 69 passed, 0 failed, 0 skipped.
 - Public SDK import scan входит в tests; private BB dependencies не используются.
 - `bb plugin build .` создаёт server, app и self-contained host bundles.
 
@@ -22,6 +22,11 @@
 В 0.1.1 добавлены независимые от плана кнопки обновления AI Factory и запуска `aif`/`aif-analyze`. Тестами проверены отсутствие автоматического update, выбор analyze по установленному расширению, обнаружение custom skills, отсутствие аргумента плана у setup, запрет запуска отсутствующего skill, защита busy/pending и передача updater-запроса только в текущий чат. Версии установки включены в fingerprint карточки.
 
 ## Live-проверки
+
+В 0.2.0 добавлен composer banner с командами из последнего ответа агента. Новые тесты проверяют разбор двух команд и повторов, отдельное скрытие и сохранение после reload, новый текст ответа, сохранение черновика, смену чата, отсутствие аргументов/окружающего текста в отправке, busy/pending/queue, stale answer/files, гонку смены ответа во время чтения проекта, duplicate/uncertain delivery и общий guard с workflow-карточкой.
+
+- `aif-chat@0.2.0` собран и перезагружен со статусом running. Реальный `suggestions` RPC корректно вернул пустой список для последних ответов без `$aif…`.
+- В настоящем BB на изолированной браузерной RPC-фикстуре отрисованы `$aif-architecture` и `$aif-roadmap` над composer; крестик первой команды оставил только вторую, число запусков — 0, пустой черновик сохранён. Backend SDK harness отдельно проверяет реальное хранение dismissal и защищённую отправку. Модельный запуск в live-проверке не выполнялся.
 
 В 0.1.3 исправлен выбор общей установки Codex: при BB runtime `codex-app` и нескольких записях проекта (`codex`, `copilot`) skills из `.agents/skills` больше не считаются отсутствующими. Тесты подтверждают приоритет точного runtime, поддержку shared universal, отсутствие подстановки приватных каталогов и отключение команды после удаления её `SKILL.md`.
 

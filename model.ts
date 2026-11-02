@@ -40,3 +40,12 @@ export const hostInputSchema = z.object({ root: z.string().min(1).max(4096), tar
   upstreamRepo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), upstreamRef: z.string().max(200),
 }).strict();
 export type HostInput = z.infer<typeof hostInputSchema>;
+export const suggestionRequestSchema = z.object({ threadId: z.string().min(1).max(200) }).strict();
+export const suggestionActionSchema = suggestionRequestSchema.extend({
+  sourceKey: z.string().length(64), commandId: z.string().max(100).regex(/^aif(?:-[a-z0-9]+)*$/),
+}).strict();
+export const suggestionsSchema = z.object({
+  sourceKey: z.string(), fingerprint: z.string(), threadState: z.string(),
+  items: z.array(z.object({ id: z.string(), command: z.string(), available: z.boolean(), reason: z.string() })),
+});
+export type Suggestions = z.infer<typeof suggestionsSchema>;

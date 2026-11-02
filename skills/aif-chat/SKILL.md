@@ -7,6 +7,8 @@ description: Show AI Factory/AIFHub versions, workflow buttons, selected plan ta
 
 The persistent **AI Factory** button in the thread header opens the workflow tab in the right panel; on narrow layouts BB moves it into the header menu. Opening this panel only reads status and never dispatches a workflow. Users do not need to find a previous transcript card. The panel follows the owning thread and its stored selection/phase.
 
+The composer also shows names of `$aif…` commands found in the last assistant answer. A command click is explicit authorization for that selected installed skill only; the × control hides one suggestion without a message or workflow action. Suggestions preserve the user's draft, drop surrounding prose and arguments, and revalidate the answer and workflow guards on the server. Do not emit special markup just to populate this row or run every suggested command automatically.
+
 Use native tool `aif_chat_status` with the selected project-relative plan/change entrypoint and the phase actually reached (`explore`, `plan`, `improve`, `implement`, `verify`, `fix`, `done`). Emit its `previewDirective` exactly once on its own line, outside code. It renders an interactive card in this chat. Do not repeat unchanged cards. The tool reads files; it never executes workflow commands, tests or installs updates.
 
 CLI fallback:

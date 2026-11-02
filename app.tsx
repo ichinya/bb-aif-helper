@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { definePluginApp, useRpc, useRealtime, type PluginMessageDirectiveProps, type ExperimentalThreadContextCardProps, type ExperimentalThreadTabProps } from '@get-bb/plugin-sdk/app';
+import { definePluginApp, useRpc, useRealtime, useComposer, type PluginMessageDirectiveProps, type ExperimentalThreadContextCardProps, type ExperimentalThreadTabProps } from '@get-bb/plugin-sdk/app';
 import type { rpcContract } from './contract.ts';
-import { phaseSchema, type Snapshot, type Phase, type Action } from './model.ts';
+import { phaseSchema, type Snapshot, type Phase, type Action, type Suggestions } from './model.ts';
 import './aif-chat.css';
 
 const phaseNames: Record<Phase, string> = { unknown: 'Контекст задачи', explore: 'Исследование', plan: 'Планирование', improve: 'Уточнение плана', implement: 'Выполнение плана', verify: 'Проверка', fix: 'Исправление замечаний', done: 'Финализация' };
@@ -113,7 +113,58 @@ function Directive(props: PluginMessageDirectiveProps) {
 }
 function ContextCard({ threadId }: ExperimentalThreadContextCardProps) { return <WorkflowCard threadId={threadId} compact />; }
 function WorkflowPanel({ threadId }: ExperimentalThreadTabProps) { return <div className="aif-panel"><WorkflowCard key={threadId} threadId={threadId} compact /></div>; }
+function SuggestedCommands() {
+  const composer = useComposer();
+  return composer.scope.kind === 'thread' ? <SuggestionBar key={composer.scope.threadId} threadId={composer.scope.threadId} composerBusy={composer.isRunning || composer.isSubmitting} /> : null;
+}
+function SuggestionBar({ threadId, composerBusy }: { threadId: string; composerBusy: boolean }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [data, setData] = useState<Suggestions | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [working, setWorking] = useState(false);
+  const mounted = useRef(true);
+  const operation = useRef(false);
+  const sequence = useRef(0);
+  const refresh = useCallback(async () => {
+    const id = ++sequence.current;
+    try {
+      const next = await rpc.call('suggestions', { threadId });
+      if (mounted.current && sequence.current === id) setData(next);
+    } catch { if (mounted.current && sequence.current === id) setData(null); }
+  }, [rpc, threadId]);
+  useEffect(() => {
+    mounted.current = true; void refresh();
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 15000);
+    return () => { mounted.current = false; sequence.current++; window.clearInterval(timer); };
+  }, [refresh]);
+  useRealtime('changed', (payload: unknown) => { if ((payload as { threadId?: string })?.threadId === threadId) void refresh(); });
+  async function act(id: string, dismiss: boolean) {
+    if (!data || operation.current) return;
+    operation.current = true; setWorking(true); setError(''); setNotice('');
+    try {
+      const input = { threadId, sourceKey: data.sourceKey, commandId: id };
+      if (dismiss) await rpc.call('dismissSuggestion', input);
+      else {
+        const result = await rpc.call('runSuggestion', { ...input, fingerprint: data.fingerprint, requestId: crypto.randomUUID() });
+        if (mounted.current) setNotice(result.message);
+      }
+    } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : String(e)); }
+    finally { await refresh(); operation.current = false; if (mounted.current) setWorking(false); }
+  }
+  const busy = composerBusy || !!data && !['idle', 'error'].includes(data.threadState);
+  if (!data?.items.length && !error && !notice) return null;
+  return <section className="aif-suggestions" aria-label="Команды из последнего ответа агента">
+    {!!data?.items.length && <><span className="aif-suggestions-label">Из ответа агента</span><div className="aif-suggestion-list">{data.items.map(item => <div className="aif-suggestion" key={item.id}>
+      <button type="button" className="aif-suggestion-run" disabled={working || busy || !item.available} title={busy ? 'Дождитесь завершения текущей работы' : item.reason} onClick={() => void act(item.id, false)}>{item.command}</button>
+      <button type="button" className="aif-suggestion-dismiss" disabled={working} aria-label={`Удалить предложение ${item.command}`} title="Убрать из предложений этого ответа" onClick={() => void act(item.id, true)}>×</button>
+    </div>)}</div></>}
+    {error && <p className="aif-error" role="alert">{error}</p>}
+    {notice && <p className="aif-muted aif-small" role="status">{notice}</p>}
+  </section>;
+}
 export default definePluginApp(app => {
+  app.composer.customize({ id: 'suggested-commands', scopes: ['thread'], banners: [{ id: 'commands', chrome: 'bare', component: SuggestedCommands }] });
   app.slots.messageDirective({ id: 'aif-chat', component: Directive });
   app.slots.experimental_threadContextCardSection({ id: 'workflow', title: 'AI Factory', group: '9_aif', order: 10, component: ContextCard });
   app.slots.experimental_tab({ id: 'workflow', context: { kind: 'thread' }, availability: 'fixed', title: 'AI Factory', icon: 'Workflow', layout: 'flush', component: WorkflowPanel });

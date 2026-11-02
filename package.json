@@ -1,8 +1,8 @@
 {
   "name": "bb-plugin-aif-chat",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "type": "module",
-  "description": "AI Factory and AIFHub workflow helper for BB: pinned panel, versions, actions and plan progress.",
+  "description": "AI Factory and AIFHub helper for BB: workflow panel, versions, progress and command suggestions.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ichinya/bb-aif-helper.git"
@@ -32,7 +32,7 @@
   },
   "bb": {
     "name": "AI Factory Chat [Experimental]",
-    "description": "AI Factory and AIFHub workflow buttons, versions, plan progress and QA evidence in BB chat.",
+    "description": "AI Factory and AIFHub versions, workflow panel, plan progress and command suggestions in BB chat.",
     "branding": {
       "icon": "Workflow"
     },

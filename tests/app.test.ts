@@ -89,3 +89,57 @@ test('AIFHub context button is analyze and obeys busy-state disabling', async ()
   try { assert.equal((await slot.findByRole('button', { name: 'Запустить aif-analyze' }) as HTMLButtonElement).disabled, true); }
   finally { slot.lifecycle.unmount(); }
 });
+
+function suggestedData() { return { sourceKey: 'c'.repeat(64), fingerprint: 'a'.repeat(64), threadState: 'idle', items: ['aif-architecture', 'aif-roadmap'].map(id => ({ id, command: `$${id}`, available: true, reason: 'Из последнего ответа' })) }; }
+const banner = app.composerCustomizations.find(c => c.id === 'suggested-commands')!.banners![0];
+test('composer suggestions have a separate dismiss control and never dispatch during discovery or removal', async () => {
+  assert.deepEqual(app.composerCustomizations.find(c => c.id === 'suggested-commands')!.scopes, ['thread']);
+  let current = suggestedData(); let sends = 0;
+  const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' }, text: 'Мой черновик' }, rpc: {
+    suggestions: () => current,
+    dismissSuggestion: (input: any) => { current = { ...current, items: current.items.filter(i => i.id !== input.commandId) }; return { dismissed: true }; },
+    runSuggestion: () => { sends++; return { sent: true, message: 'Отправлено' }; },
+  } });
+  try {
+    await slot.findByRole('button', { name: '$aif-architecture' });
+    await slot.findByRole('button', { name: '$aif-roadmap' });
+    fireEvent.click(slot.getByRole('button', { name: 'Удалить предложение $aif-architecture' }));
+    await waitFor(() => assert(!slot.queryByRole('button', { name: '$aif-architecture' })));
+    assert(slot.getByRole('button', { name: '$aif-roadmap' })); assert.equal(sends, 0);
+    await slot.behavior.emitRealtime('changed', { threadId: 'thr_test' });
+    assert.equal(slot.queryByRole('button', { name: '$aif-architecture' }), null);
+    assert.equal(slot.inspection.composer.text, 'Мой черновик');
+  } finally { slot.lifecycle.unmount(); }
+});
+test('suggested command dispatch is click-only and guarded against double clicks without replacing a draft', async () => {
+  let sends = 0;
+  const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' }, text: 'Keep draft' }, rpc: {
+    suggestions: () => suggestedData(), runSuggestion: (input: any) => { assert.equal(input.commandId, 'aif-roadmap'); assert.equal(input.threadId, 'thr_test'); sends++; return { sent: true, message: 'Отправлено' }; },
+  } });
+  try {
+    const button = await slot.findByRole('button', { name: '$aif-roadmap' }); assert.equal(sends, 0);
+    fireEvent.click(button); fireEvent.click(button); await waitFor(() => assert.equal(sends, 1));
+    assert.equal(slot.inspection.composer.text, 'Keep draft');
+  } finally { slot.lifecycle.unmount(); }
+});
+test('busy composer disables command launch but allows removing a suggestion', async () => {
+  const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' }, isRunning: true }, rpc: { suggestions: () => suggestedData() } });
+  try {
+    assert.equal((await slot.findByRole('button', { name: '$aif-roadmap' }) as HTMLButtonElement).disabled, true);
+    assert.equal((slot.getByRole('button', { name: 'Удалить предложение $aif-roadmap' }) as HTMLButtonElement).disabled, false);
+  } finally { slot.lifecycle.unmount(); }
+});
+test('suggestion banner follows composer scope and rejects an old thread response arriving late', async () => {
+  let finishOld!: (value: ReturnType<typeof suggestedData>) => void;
+  const old = new Promise<ReturnType<typeof suggestedData>>(resolve => { finishOld = resolve; });
+  const fresh = { ...suggestedData(), items: [{ id: 'aif-plan', command: '$aif-plan', available: true, reason: 'New thread' }] };
+  const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_old' } }, rpc: { suggestions: (input: any) => input.threadId === 'thr_old' ? old : fresh } });
+  try {
+    await slot.behavior.setComposerScope({ kind: 'thread', threadId: 'thr_new' });
+    await slot.findByRole('button', { name: '$aif-plan' });
+    finishOld(suggestedData());
+    await waitFor(() => assert(!slot.queryByRole('button', { name: '$aif-roadmap' })));
+    await slot.behavior.setComposerScope({ kind: 'new-thread', projectId: 'proj_test' });
+    assert.equal(slot.queryByRole('button', { name: '$aif-plan' }), null);
+  } finally { slot.lifecycle.unmount(); }
+});

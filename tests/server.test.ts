@@ -11,16 +11,18 @@ async function setup() {
   let sends = 0;
   let failSend = false;
   let pending = 0;
+  let output: string | null = null;
   let thread = makeThreadResponse({ id: 'thr_test', projectId: 'proj_test', environmentId: 'env_test', status: 'idle', runtime: { displayStatus: 'idle' } });
   const h = createFakePluginHost({ pluginId: 'aif-chat', agentSkillIds: ['aif-chat'], experimental_hostEntry: true,
     sdk: {
-      threads: { get: async () => thread, send: async () => { sends++; if (failSend) throw new Error('lost connection'); return {} as any; }, interactions: { list: async () => Array.from({ length: pending }, () => ({})) as any } },
+      threads: { get: async () => thread, output: async () => ({ output }), send: async () => { sends++; if (failSend) throw new Error('lost connection'); return {} as any; }, interactions: { list: async () => Array.from({ length: pending }, () => ({})) as any } },
       environments: { get: async () => ({ id: 'env_test', projectId: 'proj_test', path: '/project', hostId: 'host_test', status: 'ready', lifecycle: { phase: 'active' } }) as any },
     },
     experimental_callHostRpc: async () => structuredClone(value),
   });
   await plugin(h.bb);
   return { ...h, get value() { return value; }, set value(v) { value = v; }, get sends() { return sends; },
+    setOutput(text: string | null) { output = text; }, setQueued(count: number) { thread = { ...thread, queuedMessageCount: count }; },
     setFailure(v: boolean) { failSend = v; }, setPending(v: number) { pending = v; }, setActive(v: boolean) { thread = { ...thread, status: v ? 'active' : 'idle', runtime: { displayStatus: v ? 'active' : 'idle' } }; } };
 }
 function runInput(fingerprint = 'a'.repeat(64)) { return { threadId: 'thr_test', target: '.ai-factory/plans/demo.md', phase: 'plan', fingerprint, actionId: 'improve', requestId: randomUUID() }; }
@@ -98,5 +100,92 @@ test('update button sends a maintenance request to the current thread without ru
     const calls = h.harness.inspection.sdk.callsTo('threads.send');
     assert.match(JSON.stringify(calls[0]), /npm install -g ai-factory@latest/);
     assert.match(JSON.stringify(calls[0]), /thr_test/);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
+function suggestionInput(view: any, commandId = 'aif-plan') {
+  return { threadId: 'thr_test', sourceKey: view.sourceKey, fingerprint: view.fingerprint, commandId, requestId: randomUUID() };
+}
+test('no commands in the last answer means no suggestions or host scans', async () => {
+  const h = await setup(); try {
+    h.setOutput('Completed.');
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.deepEqual(view.items, []); assert.equal(h.harness.experimental_hostRpcCalls.length, 0); assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('two last-answer commands are suggested; individual dismissal survives reload and resets for a new answer', async () => {
+  const h = await setup(); let live = h.harness; try {
+    h.value = { ...h.value, skills: [...h.value.skills, 'aif-architecture', 'aif-roadmap'] };
+    h.setOutput('Далее `$aif-architecture`, затем `$aif-roadmap`.');
+    const read = () => live.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as Promise<any>;
+    const before = await read(); assert.deepEqual(before.items.map((i: any) => i.command), ['$aif-architecture', '$aif-roadmap']);
+    assert(before.items.every((i: any) => i.available));
+    const dismiss = { threadId: 'thr_test', sourceKey: before.sourceKey, commandId: 'aif-architecture' };
+    await h.harness.behavior.callRpc('dismissSuggestion', dismiss);
+    await h.harness.behavior.callRpc('dismissSuggestion', dismiss); // idempotent, no dispatch
+    live = (await live.lifecycle.reload(plugin)).harness;
+    assert.deepEqual((await read()).items.map((i: any) => i.id), ['aif-roadmap']); assert.equal(h.sends, 0);
+    h.setOutput('Новый ответ: `$aif-architecture`, затем `$aif-roadmap`.');
+    assert.equal((await read()).items.length, 2);
+  } finally { await live.lifecycle.dispose(); }
+});
+test('suggestion click sends only the selected skill once and preserves the shared delivery guard', async () => {
+  const h = await setup(); try {
+    h.setOutput('$aif-plan full #177; unrelated shell text; $aif-explore');
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    const input = suggestionInput(view);
+    await Promise.all([h.harness.behavior.callRpc('runSuggestion', input), h.harness.behavior.callRpc('runSuggestion', input)]);
+    assert.equal(h.sends, 1);
+    const call = JSON.stringify(h.harness.inspection.sdk.callsTo('threads.send')[0]);
+    assert.match(call, /thr_test/); assert.match(call, /\$aif-plan/); assert(!call.includes('unrelated shell text')); assert(!call.includes('full #177')); assert(!call.includes('permissionMode'));
+    const after = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.deepEqual(after.items.map((i: any) => i.id), ['aif-explore']);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('stale answers, changed files, hidden suggestions and missing skills cannot dispatch', async () => {
+  const h = await setup(); try {
+    h.setOutput('$aif-plan');
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    h.setOutput('$aif-explore');
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view)));
+    h.setOutput('$aif-plan'); h.value = { ...h.value, fingerprint: 'b'.repeat(64) };
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view)));
+    const fresh = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    await h.harness.behavior.callRpc('dismissSuggestion', { threadId: 'thr_test', sourceKey: fresh.sourceKey, commandId: 'aif-plan' });
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(fresh)));
+    h.setOutput('Next $aif-missing');
+    const missing = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(missing.items[0].available, false);
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(missing, 'aif-missing'))); assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('busy, pending and queued work block suggestion sends while dismissal stays available', async () => {
+  const h = await setup(); try {
+    h.setOutput('$aif-plan $aif-explore');
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    h.setActive(true); await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view)));
+    await h.harness.behavior.callRpc('dismissSuggestion', { threadId: 'thr_test', sourceKey: view.sourceKey, commandId: 'aif-explore' });
+    h.setActive(false); h.setPending(1); await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view)));
+    h.setPending(0); h.setQueued(1); await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view)));
+    assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('uncertain suggestion send blocks both suggestion and workflow retries', async () => {
+  const h = await setup(); try {
+    h.setOutput('$aif-plan');
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    h.setFailure(true); await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view)));
+    h.setFailure(false); await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view)));
+    await assert.rejects(h.harness.behavior.callRpc('run', runInput())); assert.equal(h.sends, 1);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+test('a last answer changing during project inspection cannot dispatch an old command', async () => {
+  const h = await setup(); try {
+    h.setOutput('$aif-plan');
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    let reads = 0;
+    h.harness.sdk.stub('threads.output', async () => ({ output: ++reads === 1 ? '$aif-plan' : '$aif-explore' }));
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view)));
+    assert.equal(h.sends, 0);
   } finally { await h.harness.lifecycle.dispose(); }
 });

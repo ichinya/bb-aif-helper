@@ -32,6 +32,7 @@ React и frontend SDK предоставляет BB. Не коммитьте `no
 - `host.ts` — host entry на хосте рабочей среды чата.
 - `reader.ts` — read-only чтение версий, metadata, skills, задач и отчётов.
 - `workflow.ts` — маршруты и запросы владельцам skills.
+- `suggestions.ts` — ограниченный разбор имён `$aif…` в последнем ответе агента; server RPC отвечает за проверку и доставку, composer banner — за показ и крестики.
 - `model.ts`, `contract.ts` — schemas и RPC-контракты.
 - `skills/aif-chat/SKILL.md` — инструкции агенту, CLI и просмотр CI.
 - `tests/` — fixtures, parser/routing tests, официальный SDK harness и проверка публичных импортов.

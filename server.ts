@@ -1,11 +1,15 @@
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { hostContract, rpcContract } from './contract.ts';
-import { requestSchema, phaseSchema, type CardRequest, type Snapshot, type Phase } from './model.ts';
+import { requestSchema, phaseSchema, type CardRequest, type Snapshot, type Phase, type Suggestions } from './model.ts';
 import { actionPrompt } from './workflow.ts';
+import { extractAifCommands } from './suggestions.ts';
 export { rpcContract } from './contract.ts';
 type Selection = { environmentId: string; target: string; phase: Phase };
 type Delivery = { requestId: string; fingerprint: string; actionId: string; state: 'attempting' | 'sent' | 'uncertain'; at: number };
+type DismissedSuggestions = { sourceKey: string; ids: string[] };
+const suggestionSource = (root: string, output: string | null) => createHash('sha256').update(JSON.stringify([root, output])).digest('hex');
 export function cardDirective(request: { target?: string; phase?: Phase }): string {
   const attrs = [request.target ? `target=${JSON.stringify(request.target)}` : '', request.phase && request.phase !== 'unknown' ? `phase=${JSON.stringify(request.phase)}` : ''].filter(Boolean).join(' ');
   return `::aif-chat{${attrs}}`;
@@ -72,8 +76,65 @@ export default async function plugin(bb: BbPluginApi) {
     bb.realtime.publish('changed', { threadId: input.threadId });
     return { snapshot, previewDirective: cardDirective({ target: snapshot.target?.path ?? input.target, phase: input.phase }) };
   }
+  async function suggested(threadId: string, fresh = false) {
+    const empty: Suggestions = { sourceKey: '', fingerprint: '', threadState: 'unknown', items: [] };
+    if (!enabled) return { view: empty, ids: [] as string[], hidden: [] as string[], snapshot: null };
+    const { output } = await bb.sdk.threads.output({ threadId });
+    const ids = extractAifCommands(output ?? '');
+    if (!ids.length) return { view: empty, ids, hidden: [] as string[], snapshot: null };
+    const snapshot = await status({ threadId, target: '', phase: 'unknown' }, false, fresh);
+    const sourceKey = suggestionSource(snapshot.root, output);
+    const dismissed = await bb.storage.kv.get<DismissedSuggestions>(`suggestions-dismissed:${threadId}`);
+    const hidden = dismissed?.sourceKey === sourceKey ? dismissed.ids : [];
+    const view: Suggestions = { sourceKey, fingerprint: snapshot.fingerprint, threadState: snapshot.threadState,
+      items: ids.filter(id => !hidden.includes(id)).map(id => ({ id, command: `$${id}`,
+        available: snapshot.profile !== 'invalid' && (snapshot.skills.includes(id) || id === 'aif-chat'),
+        reason: snapshot.profile === 'invalid' ? 'Проверьте конфигурацию проекта.' : snapshot.skills.includes(id) || id === 'aif-chat' ? 'Команда из последнего ответа агента' : `Skill не установлен для ${snapshot.runtime}`,
+      })) };
+    return { view, ids, hidden, snapshot };
+  }
   bb.rpc.register(rpcContract, {
     status: input => status(input, input.checkUpdates),
+    suggestions: async input => (await suggested(input.threadId)).view,
+    dismissSuggestion: input => serial(input.threadId, async () => {
+      const current = await suggested(input.threadId);
+      if (current.view.sourceKey !== input.sourceKey || !current.ids.includes(input.commandId)) throw new Error('Предложения изменились. Обновите их.');
+      await bb.storage.kv.set(`suggestions-dismissed:${input.threadId}`, { sourceKey: input.sourceKey, ids: [...new Set([...current.hidden, input.commandId])] } satisfies DismissedSuggestions);
+      bb.realtime.publish('changed', { threadId: input.threadId });
+      return { dismissed: true as const };
+    }),
+    runSuggestion: input => serial(input.threadId, async () => {
+      const deliveries = await bb.storage.kv.get<Delivery[]>(`deliveries:${input.threadId}`) ?? [];
+      const previous = deliveries.find(d => d.requestId === input.requestId);
+      if (previous) return { sent: false, message: previous.state === 'sent' ? 'Команда уже отправлена.' : 'Исход отправки не подтверждён. Проверьте чат; автоматический повтор отключён.' };
+      if (deliveries.some(d => d.state !== 'sent')) throw new Error('Есть отправка с неизвестным исходом. Сначала проверьте чат.');
+      const current = await suggested(input.threadId, true);
+      if (current.view.sourceKey !== input.sourceKey || current.view.fingerprint !== input.fingerprint) throw new Error('Предложения устарели. Обновите их.');
+      const item = current.view.items.find(i => i.id === input.commandId && i.available);
+      if (!item || !current.snapshot) throw new Error('Команда недоступна или удалена из предложений.');
+      if (current.snapshot.pendingQuestions === null) throw new Error('Не удалось проверить открытые вопросы. Обновите предложения.');
+      if (current.snapshot.pendingQuestions) throw new Error('Сначала ответьте на открытые вопросы текущего workflow.');
+      const { thread } = await context(input.threadId);
+      if (!['idle', 'error'].includes(thread.status) || thread.queuedMessageCount > 0 || thread.activeBackgroundAgentCount > 0) throw new Error('В чате выполняется или уже ожидает работа. Дождитесь завершения.');
+      // Reading project files may take time; the last answer can change during it.
+      const latest = await bb.sdk.threads.output({ threadId: input.threadId });
+      if (suggestionSource(current.snapshot.root, latest.output) !== input.sourceKey) throw new Error('Последний ответ изменился. Обновите предложения.');
+      const actionId = `suggestion:${input.sourceKey}:${item.id}`;
+      if (deliveries.some(d => d.actionId === actionId && d.state === 'sent')) return { sent: false, message: 'Эта команда уже отправлена из данного ответа.' };
+      const record: Delivery = { requestId: input.requestId, fingerprint: input.fingerprint, actionId, state: 'attempting', at: Date.now() };
+      const next = [...deliveries.slice(-29), record];
+      await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
+      try {
+        await bb.sdk.threads.send({ threadId: input.threadId, input: [{ type: 'text', text: `${item.command}\n\nПользователь выбрал эту команду из последнего ответа агента. Выполни только этот установленный skill в текущем проекте. Перечитай действующие правила и контекст задачи; не расширяй scope и сохрани обязательные owner handoff и gates.`, mentions: [] }], mode: 'queue-if-active' });
+        record.state = 'sent'; await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
+      } catch {
+        record.state = 'uncertain'; await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
+        throw new Error('Исход отправки не подтверждён. Сначала проверьте чат; команда автоматически не повторяется.');
+      }
+      await bb.storage.kv.set(`suggestions-dismissed:${input.threadId}`, { sourceKey: input.sourceKey, ids: [...new Set([...current.hidden, item.id])] } satisfies DismissedSuggestions);
+      cache.clear(); bb.realtime.publish('changed', { threadId: input.threadId });
+      return { sent: true, message: 'Команда отправлена в этот чат.' };
+    }),
     run: input => serial(input.threadId, async () => {
       const deliveries = await bb.storage.kv.get<Delivery[]>(`deliveries:${input.threadId}`) ?? [];
       const existing = deliveries.find(d => d.requestId === input.requestId);
@@ -152,6 +213,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on('thread.deleted', async ({ thread }) => {
     await bb.storage.kv.delete(`selection:${thread.id}`); await bb.storage.kv.delete(`deliveries:${thread.id}`);
+    await bb.storage.kv.delete(`suggestions-dismissed:${thread.id}`);
   });
   bb.onDispose(() => { cache.clear(); queues.clear(); });
 }
