@@ -10,6 +10,14 @@ BB plugin ID: `aif-chat`. Репозиторий: [ichinya/bb-aif-helper](https:
 
 [Настройки и CLI](docs/reference.md) · [Workflow и проверки](docs/workflow.md) · [Разработка](CONTRIBUTING.md) · [История изменений](CHANGELOG.md)
 
+## Скриншоты
+
+Прогресс плана и следующие действия в карточке AI Factory:
+
+![Карточка AI Factory: 8 из 8 задач отмечены, доступны проверка реализации и подготовка коммита](docs/screenshots/workflow-progress.png)
+
+[Галерея: отдельные проверки и QA, версии расширений AIFHub](docs/screenshots/README.md). Кадры сняты в версии 0.1.3; окружающая переписка исключена, локальный путь скрыт. Отметки плана и результаты проверок показаны раздельно.
+
 ## Быстрый старт
 
 Нужны [BB](https://getbb.app/) **0.48+** с совместимым SDK **0.6.104+** и Git на хосте установки. Для workflow-действий установите [AI Factory](https://github.com/lee-to/ai-factory) в рабочую папку проекта. AIFHub необязателен.
