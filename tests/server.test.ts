@@ -373,6 +373,20 @@ test('a last answer changing during project inspection cannot dispatch an old co
 
 const gateText = (patch: object = {}) => '```aif-gate-result\n' + JSON.stringify({ schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: ['src/demo.ts'], suggested_next: { command: '/aif-commit', reason: 'Only non-blocking warnings remain.' }, ...patch }) + '\n```';
 
+test('security dollar fix is offered without invalidating FAIL or enabling a commit bypass', async () => {
+  const h = await setup(); try {
+    h.setOutput('$aif-commit\n' + gateText({ gate: 'security', status: 'fail', blocking: true,
+      blockers: [{ id: 'security-dev-dependency-advisories', severity: 'error', file: 'package-lock.json', summary: 'Development dependency advisories remain.' }],
+      suggested_next: { command: '$aif-fix', reason: 'Address advisories separately.' } }));
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(view.gateError, null); assert.equal(view.gate.blocking, true);
+    assert.equal(view.items.find((i: any) => i.id === 'aif-fix').available, true);
+    assert.equal(view.items.find((i: any) => i.id === 'aif-commit').available, false);
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view, 'aif-commit')));
+    await h.harness.behavior.callRpc('runSuggestion', suggestionInput(view, 'aif-fix')); assert.equal(h.sends, 1);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
 test('rules PASS with explanation and no command is accepted by suggestions RPC without dispatch', async () => {
   const h = await setup(); try {
     h.setOutput(gateText({ gate: 'rules', status: 'pass', suggested_next: { command: null, reason: 'No explicit rule violations or rule updates required.' } }));

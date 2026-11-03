@@ -6,6 +6,26 @@ import { analyzeReply } from '../suggestions.ts';
 export const gateBlock = (gate: object) => '```aif-gate-result\n' + JSON.stringify(gate) + '\n```';
 export const warnGate = { schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: ['src/demo.ts'], suggested_next: { command: '/aif-commit', reason: 'Only non-blocking warnings remain.' } };
 
+test('slash and dollar recommendations have the same allowlist without changing the original gate', () => {
+  for (const gate of ['verify', 'review', 'rules', 'security']) for (const prefix of ['/', '$']) {
+    const command = `${prefix}aif-fix`;
+    const parsed = analyzeReply(gateBlock({ ...warnGate, gate, suggested_next: { command, reason: 'Fix findings.' } }));
+    assert.equal(parsed.error, null); assert.deepEqual(parsed.ids, ['aif-fix']);
+    assert.equal(parsed.gate?.suggested_next?.command, command);
+  }
+});
+
+test('security FAIL accepts dollar fix but still blocks advancement and shell-like commands', () => {
+  const security = { ...warnGate, gate: 'security', status: 'fail', blocking: true,
+    blockers: [{ id: 'security-dev-dependency-advisories', severity: 'error', file: 'package-lock.json', summary: 'Development dependency advisories remain.' }] };
+  const parsed = analyzeReply(gateBlock({ ...security, suggested_next: { command: '$aif-fix', reason: 'Address advisories separately.' } }));
+  assert.equal(parsed.error, null); assert.equal(parsed.gate?.blocking, true); assert.equal(parsed.gate?.blockers.length, 1);
+  assert(blockedByGate('aif-commit', parsed.gate));
+  for (const command of ['$aif-commit', '$aif-done', '$aif-fix && shell', '$$aif-fix', 'aif-fix', '$aif-fix\n/aif-commit']) {
+    assert(analyzeReply(gateBlock({ ...security, suggested_next: { command, reason: 'Not allowed.' } })).error);
+  }
+});
+
 test('PASS accepts an explanation with a null command without inventing an action', () => {
   const payload = { ...warnGate, gate: 'rules', status: 'pass', suggested_next: { command: null, reason: 'No explicit rule violations or rule updates required.' } };
   const reply = analyzeReply(gateBlock(payload));

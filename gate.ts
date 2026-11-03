@@ -51,7 +51,9 @@ export function parseReplyGate(text: string): { gate: GateResult | null; error: 
   }
   if (gate.status === 'pass' && gate.suggested_next?.command != null) return result(gate, 'При PASS suggested_next.command должен быть null; следующий шаг указывается в тексте ответа.');
   const next = gate.suggested_next?.command;
-  if (next && (!allowed[gate.gate].includes(next) || blockedByGate(next.slice(1), gate))) {
+  // Codex emits $skill, other runtimes /skill. Normalize only for validation;
+  // retain the original gate data and all gate-specific restrictions.
+  if (next && (!allowed[gate.gate].includes(next.replace(/^\$/, '/')) || blockedByGate(next.slice(1), gate))) {
     return result(gate, 'suggested_next.command недопустим для этого gate или обходит блокирующие проблемы.');
   }
   return result(gate, null);

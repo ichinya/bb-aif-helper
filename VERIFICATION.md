@@ -1,8 +1,10 @@
-# Проверка AI Factory Chat 0.7.0
+# Проверка AI Factory Chat 0.7.1
 
 Проверено 3 ноября 2026 года на Windows, BB Plugin SDK 0.6.104. Исторические проверки ниже сохраняют даты своих выпусков.
 
 ## Автоматические проверки
+
+Для 0.7.1: **75 профильных parser/history/frontend/server/public-SDK тестов passed, 0 failed, 0 skipped**, TypeScript и сборка прошли. Проверены одинаковый allowlist для `$` и `/`, сохранение исходной команды, security FAIL с `$aif-fix`, сохранение blockers, запрет commit и shell-подобных строк. SDK harness подтверждает доступность fix и отклонение обхода через commit; отправка проверена только на mock.
 
 Для 0.7.0: полный suite — **123 passed, 0 failed, 0 skipped**, TypeScript и сборка прошли. Покрыты совпадение/расхождение/неизвестность версий, здоровье расширений, перенос обеих updater-кнопок под спойлер, версии extensions в краткой строке и отключение повторного GitHub check. SDK harness проверяет сохранение CLI/Git и GitHub результатов через force/reload, истечение 24 часов, сохранение лимита при ошибке host и invalidation после maintenance. Reader fixture проверяет, что кэш CLI/source не подменяет живые проектные/extension metadata.
 
@@ -38,6 +40,8 @@
 В 0.1.1 добавлены независимые от плана кнопки обновления AI Factory и запуска `aif`/`aif-analyze`. Тестами проверены отсутствие автоматического update, выбор analyze по установленному расширению, обнаружение custom skills, отсутствие аргумента плана у setup, запрет запуска отсутствующего skill, защита busy/pending и передача updater-запроса только в текущий чат. Версии установки включены в fingerprint карточки.
 
 ## Live-проверки
+
+В 0.7.1 плагин running. Read-only status восстановил реальный security FAIL с blocker `security-dev-dependency-advisories` и исходной рекомендацией `$aif-fix` из истории чата; актуальность старого результата остаётся unknown. В настоящем BB code-fence renderer показывает «Данные gate · security · FAIL» без ошибки валидации. Последний ответ к моменту проверки уже не содержал gate, поэтому fix-кнопка проверена в SDK harness. Реальные security/fix и сообщения в проект для проверки не запускались.
 
 В 0.7.0 плагин running. Реальный status для AIFHub-проекта показывает совпадающие CLI/проект/Git 2.21.0 и recorded/installed aifhub-extension 1.8.1; эти данные не подменялись. На них правила UI помещают updater-кнопки внутрь версии; DOM-поведение с теми же состояниями проверено frontend harness. Два последовательных реальных `check-updates` сохраняют одинаковые времена CLI/source и GitHub, подтверждая использование суточных результатов. Обновления установок и workflow не запускались.
 
