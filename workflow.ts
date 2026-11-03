@@ -1,5 +1,12 @@
 import type { Action, Snapshot } from './model.ts';
 
+/** Task progress guides navigation without declaring an active agent invocation. */
+export const planExecutionStarted = (s: Snapshot) => !!s.target && (
+  s.target.tasks.some(t => t.done) || ['implement', 'verify', 'fix', 'done'].includes(s.phase)
+);
+export const contextSetupInDetails = (s: Snapshot, actionId: string) =>
+  actionId === 'setup-context' && planExecutionStarted(s);
+
 /** Routing is presentation. The selected skill remains the owner of execution/readiness. */
 export function workflowActions(s: Snapshot): Action[] {
   const result: Action[] = [];
@@ -50,7 +57,7 @@ export function workflowActions(s: Snapshot): Action[] {
       add('done', 'Проверить готовность и завершить', 'aif-done', 'next', 'Verify и done readiness различаются; финализатор проверит актуальность evidence');
     } else add('verify', 'Проверить реализацию', 'aif-verify', 'next', 'Проверить завершённые задачи и обязательные gates');
     if (!hub) add('commit', 'Подготовить коммит', 'aif-commit', 'next', 'Verify необязателен в upstream; project-required checks сохраняются', '');
-  } else if (s.phase === 'plan' || s.phase === 'explore' || s.phase === 'unknown') {
+  } else if (s.phase === 'plan' || s.phase === 'explore' || (s.phase === 'unknown' && !planExecutionStarted(s))) {
     add('improve', 'Улучшить план', 'aif-improve', 'next', hub ? 'Основной handoff AIFHub после planning' : 'Необязательное уточнение плана');
     if (!hub || s.profile === 'aifhub-ultra') add('implement', 'Выполнить план', 'aif-implement', 'next', 'Начать выполнение выбранного плана');
   } else {

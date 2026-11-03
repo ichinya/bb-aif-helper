@@ -45,6 +45,28 @@ test('configuration errors do not hide the installation update button', async ()
   } finally { slot.lifecycle.unmount(); }
 });
 
+test('a started plan shows resume while context setup is available only under its spoiler', async () => {
+  const s = snapshot({ profile: 'aifhub-openspec', phase: 'unknown', skills: ['aif-analyze', 'aif-implement', 'aif-improve'],
+    extensions: [{ name: 'aifhub-extension', recordedVersion: '1.8.1', installedVersion: '1.8.1', source: 'local', state: 'present', contributions: [] }] });
+  s.target!.tasks = [{ id: '1', title: 'Done', done: true }, { id: '2', title: 'Remaining', done: false }];
+  s.actions = workflowActions(s);
+  let runs = 0;
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s, run: () => { runs++; return { sent: true, message: 'Отправлено' }; } } });
+  try {
+    await slot.findByRole('button', { name: 'Продолжить выполнение' });
+    const setup = slot.getByRole('button', { name: 'Запустить aif-analyze', hidden: true });
+    const details = setup.closest('details')!;
+    assert(details.classList.contains('aif-context-setup')); assert.equal(details.open, false);
+    assert(!setup.closest('.aif-maintenance'));
+    assert.match(slot.getByText(/Контекст задачи/).textContent!, /агент свободен/);
+    assert.equal(runs, 0);
+    fireEvent.click(slot.getByText('Настройка контекста проекта'));
+    assert.equal(details.open, true);
+    assert.equal((slot.getByRole('button', { name: 'Запустить aif-analyze' }) as HTMLButtonElement).disabled, false);
+    assert.equal(runs, 0);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('registered extensions have a separate update button even with an invalid selected plan', async () => {
   const s = snapshot({ profile: 'invalid', extensions: [{ name: 'aifhub-extension', recordedVersion: '1.7.1', installedVersion: '1.7.1', source: 'local', state: 'present', contributions: [] }] }); s.actions = workflowActions(s);
   const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s } });

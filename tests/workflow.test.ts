@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { workflowActions, actionPrompt } from '../workflow.ts';
+import { workflowActions, actionPrompt, contextSetupInDetails } from '../workflow.ts';
 import { snapshot } from './fixtures.ts';
 
 test('invalid plan/config keeps the installation updater while blocking workflow and setup', () => {
@@ -19,6 +19,30 @@ test('AIFHub plan routes through improve; upstream permits immediate implementat
   const actions = workflowActions(snapshot({ profile: 'aifhub-classic' }));
   assert.equal(actions[0].id, 'improve');
   assert(!actions.some(a => a.id === 'implement'));
+});
+
+test('partial progress resumes an unknown-stage plan without declaring an active invocation', () => {
+  for (const profile of ['upstream', 'aifhub-classic', 'aifhub-openspec'] as const) {
+    const s = snapshot({ profile, phase: 'unknown' });
+    s.target!.tasks = [{ id: '1', title: 'Done', done: true }, { id: '2', title: 'Remaining', done: false }];
+    const action = workflowActions(s)[0];
+    assert.equal(action.id, 'implement'); assert.equal(action.label, 'Продолжить выполнение');
+    assert.equal(s.phase, 'unknown');
+    assert(contextSetupInDetails(s, 'setup-context'));
+    assert(!contextSetupInDetails(s, 'update-factory'));
+    assert(!contextSetupInDetails(s, 'update-extensions'));
+    s.phase = 'plan';
+    assert.equal(workflowActions(s)[0].id, 'improve'); // explicit replanning owns the next step
+    s.phase = 'fix';
+    assert.equal(workflowActions(s)[0].id, 'verify');
+  }
+});
+
+test('context setup stays prominent before execution and is tucked away during declared execution', () => {
+  const s = snapshot();
+  assert(!contextSetupInDetails(s, 'setup-context'));
+  s.phase = 'implement'; assert(contextSetupInDetails(s, 'setup-context'));
+  s.target = null; assert(!contextSetupInDetails(s, 'setup-context'));
 });
 test('after fix the next owner is verify, not a new implementation run', () => {
   assert.equal(workflowActions(snapshot({ phase: 'fix', profile: 'aifhub-openspec' }))[0].id, 'verify');
