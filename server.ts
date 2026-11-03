@@ -9,6 +9,7 @@ import { blockedByGate } from './gate.ts';
 import { attachChatChecks, readChatChecks, type ChatCheck } from './check-history.ts';
 import { lockUnchangedChecks, unchangedCheck, unchangedReason } from './check-actions.ts';
 import { SnapshotCache } from './snapshot-cache.ts';
+import { versionSampleFresh } from './versions.ts';
 export { rpcContract } from './contract.ts';
 type Selection = { environmentId: string; target: string; phase: Phase };
 type Delivery = { requestId: string; fingerprint: string; actionId: string; state: 'attempting' | 'sent' | 'uncertain'; at: number };
@@ -38,7 +39,17 @@ export default async function plugin(bb: BbPluginApi) {
   const queues = new Map<string, Promise<unknown>>();
   let disposed = false;
   const db = bb.storage.database();
-  bb.storage.migrate(db, ['CREATE TABLE IF NOT EXISTS status_cache (key TEXT PRIMARY KEY, at INTEGER NOT NULL, value TEXT NOT NULL)']);
+  bb.storage.migrate(db, ['CREATE TABLE IF NOT EXISTS status_cache (key TEXT PRIMARY KEY, at INTEGER NOT NULL, value TEXT NOT NULL)',
+    'CREATE TABLE IF NOT EXISTS local_versions (key TEXT PRIMARY KEY, at INTEGER NOT NULL, value TEXT NOT NULL)']);
+  const versionScopes = new Map<string, string>();
+  const readLocalVersions = (key: string) => {
+    const row = db.prepare('SELECT at, value FROM local_versions WHERE key = ?').get(key) as { at: number; value: string } | undefined;
+    if (!row || !versionSampleFresh(row.at)) return null;
+    try {
+      const value = snapshotSchema.shape.versions.safeParse(JSON.parse(row.value));
+      return value.success ? { versions: value.data, checkedAt: new Date(row.at).toISOString() } : null;
+    } catch { return null; }
+  };
   const cacheRead = db.prepare('SELECT at, value FROM status_cache WHERE key = ?');
   const cacheWrite = db.prepare('INSERT INTO status_cache (key, at, value) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET at=excluded.at, value=excluded.value');
   const watchers = new Map<string, Set<string>>();
@@ -136,17 +147,52 @@ export default async function plugin(bb: BbPluginApi) {
     const phase = input.phase === 'unknown' ? selection?.phase ?? input.phase : input.phase;
     const runtime = config.runtime === 'auto' ? thread.providerId === 'codex' ? 'codex-app' : thread.providerId : config.runtime;
     const key = JSON.stringify(['status/v1', environment.id, environment.path, environment.hostId, target, runtime, config.sourceRepo, config.upstreamRepo, config.upstreamRef]);
+    const versionKey = JSON.stringify([environment.id, environment.path, environment.hostId, runtime, config.sourceRepo]);
+    const remoteKey = `upstream:${environment.hostId}:${config.upstreamRepo}:${config.upstreamRef}`;
+    if (versionScopes.size > 100) versionScopes.clear();
+    versionScopes.set(input.threadId, versionKey);
     if (watchers.size > 100) watchers.clear();
     const listeners = watchers.get(key) ?? new Set<string>(); listeners.add(input.threadId); watchers.set(key, listeners);
     if (fresh || checkUpdates) cache.invalidate(candidate => candidate === key);
     const snapshot = await cache.get(key, async () => {
-      const collected = await host.call('collect', { root: environment.path!, target, phase: 'unknown', runtime, sourceRepo: config.sourceRepo,
-        checkUpdates, upstreamRepo: config.upstreamRepo, upstreamRef: config.upstreamRef }, { hostId: environment.hostId });
-      const remoteKey = `upstream:${environment.hostId}:${config.upstreamRepo}:${config.upstreamRef}`;
-      if (checkUpdates) await bb.storage.kv.set(remoteKey, collected.upstream);
-      else collected.upstream = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey) ?? collected.upstream;
-      return collected;
+      const dirty = fresh && thread.status === 'active' ? await bb.storage.kv.get<{ key: string }>(`updating-versions:${input.threadId}`) : null;
+      const collect = async () => {
+        const local = dirty?.key === versionKey ? null : readLocalVersions(versionKey);
+        let checkRemote = false;
+        if (checkUpdates) checkRemote = await serial(`version-check:${remoteKey}`, async () => {
+          const previous = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey);
+          if (previous?.checkedAt && versionSampleFresh(Date.parse(previous.checkedAt))) return false;
+          // Reserve the attempt before the host/network call; reloads, parallel
+          // workspaces and failed requests must not bypass the daily limit.
+          await bb.storage.kv.set(remoteKey, { version: null, sha: null, ref: null, checkedAt: new Date().toISOString(), error: 'Проверка выполняется; повторная попытка доступна через сутки.' });
+          return true;
+        });
+        try {
+          const collected = await host.call('collect', { root: environment.path!, target, phase: 'unknown', runtime, sourceRepo: config.sourceRepo,
+            checkUpdates: checkRemote, cachedVersions: local, upstreamRepo: config.upstreamRepo, upstreamRef: config.upstreamRef }, { hostId: environment.hostId });
+          if (!local) {
+            const at = Date.now();
+            db.prepare('INSERT INTO local_versions (key, at, value) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET at=excluded.at, value=excluded.value')
+              .run(versionKey, at, JSON.stringify({ ...collected.versions, installed: null }));
+            db.prepare('DELETE FROM local_versions WHERE key IN (SELECT key FROM local_versions ORDER BY at DESC LIMIT -1 OFFSET 100)').run();
+            collected.versionsCheckedAt = new Date(at).toISOString();
+          } else collected.versionsCheckedAt = local.checkedAt;
+          if (checkRemote) {
+            const attempt = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey);
+            await bb.storage.kv.set(remoteKey, { ...collected.upstream, checkedAt: attempt?.checkedAt ?? new Date().toISOString() });
+          }
+          return collected;
+        } catch (error) {
+          if (checkRemote && !disposed) {
+            const attempt = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey);
+            if (attempt) await bb.storage.kv.set(remoteKey, { ...attempt, error: 'Проверка не завершилась; сохранён суточный интервал повторной попытки.' });
+          }
+          throw error;
+        }
+      };
+      return !readLocalVersions(versionKey) || dirty?.key === versionKey ? serial(`local-versions:${versionKey}`, collect) : collect();
     }, fresh || checkUpdates);
+    snapshot.upstream = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey) ?? snapshot.upstream;
     if (snapshot.phase !== phase) {
       snapshot.fingerprint = createHash('sha256').update(JSON.stringify([snapshot.fingerprint, phase])).digest('hex');
       snapshot.phase = phase;
@@ -255,6 +301,13 @@ export default async function plugin(bb: BbPluginApi) {
       const next = [...deliveries.slice(-29), record];
       await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
       try {
+        if (action.id === 'update-factory' || action.id === 'update-extensions') {
+          const versionKey = versionScopes.get(input.threadId);
+          if (versionKey) {
+            await bb.storage.kv.set(`updating-versions:${input.threadId}`, { key: versionKey });
+            db.prepare('DELETE FROM local_versions WHERE key = ?').run(versionKey);
+          }
+        }
         await bb.sdk.threads.send({ threadId: input.threadId, input: commandInput(action.command, actionPrompt(current, action)), mode: 'queue-if-active' });
         record.state = 'sent';
         await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
@@ -319,6 +372,13 @@ export default async function plugin(bb: BbPluginApi) {
     bb.realtime.publish('changed', { threadId: thread.id });
   });
   bb.events.on('thread.idle', async ({ thread, lastAssistantText }) => {
+    const updating = await bb.storage.kv.get<{ key: string }>(`updating-versions:${thread.id}`);
+    if (updating) {
+      db.prepare('DELETE FROM local_versions WHERE key = ?').run(updating.key);
+      await bb.storage.kv.delete(`updating-versions:${thread.id}`);
+      cache.invalidate(key => !!watchers.get(key)?.has(thread.id));
+      bb.realtime.publish('changed', { threadId: thread.id });
+    }
     const reply = analyzeReply(lastAssistantText ?? '');
     if (!enabled || !reply.gate || reply.error) return;
     // Only a live completion can establish a comparison baseline. Loading an
@@ -354,6 +414,7 @@ export default async function plugin(bb: BbPluginApi) {
     for (const listeners of watchers.values()) listeners.delete(thread.id);
     await bb.storage.kv.delete(`selection:${thread.id}`); await bb.storage.kv.delete(`deliveries:${thread.id}`);
     await bb.storage.kv.delete(`suggestions-dismissed:${thread.id}`);
+    await bb.storage.kv.delete(`updating-versions:${thread.id}`); versionScopes.delete(thread.id);
   });
-  bb.onDispose(() => { disposed = true; cache.dispose(); histories.clear(); historyLoads.clear(); historyEpochs.clear(); watchers.clear(); queues.clear(); });
+  bb.onDispose(() => { disposed = true; cache.dispose(); histories.clear(); historyLoads.clear(); historyEpochs.clear(); watchers.clear(); versionScopes.clear(); queues.clear(); });
 }

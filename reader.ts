@@ -185,10 +185,17 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
     upstream: { version: null, sha: null, ref: null, checkedAt: null, error: null },
     extensions: [], skills: [], candidates: [], target: null, checks: [], actions: [], diagnostics: [],
   };
-  const global = await globalPackage();
-  s.versions.globalCli = global.version; s.versions.globalSource = global.source;
-  try { Object.assign(s.versions, await sourceVersion(input.sourceRepo, signal), { globalCli: global.version, globalSource: global.source }); }
-  catch { s.diagnostics.push('Указанный checkout исходников AI Factory недоступен или некорректен.'); }
+  if (input.cachedVersions) {
+    Object.assign(s.versions, input.cachedVersions.versions, { installed: null });
+    s.versionsCheckedAt = input.cachedVersions.checkedAt;
+    if (input.sourceRepo && !s.versions.sourceVersion) s.diagnostics.push('Указанный checkout исходников AI Factory недоступен или некорректен.');
+  } else {
+    const global = await globalPackage();
+    s.versions.globalCli = global.version; s.versions.globalSource = global.source;
+    try { Object.assign(s.versions, await sourceVersion(input.sourceRepo, signal), { globalCli: global.version, globalSource: global.source }); }
+    catch { s.diagnostics.push('Указанный checkout исходников AI Factory недоступен или некорректен.'); }
+    s.versionsCheckedAt = new Date().toISOString();
+  }
   if (input.checkUpdates) s.upstream = await upstream(input.upstreamRepo, input.upstreamRef, signal);
   let meta: Record<string, any> = {};
   let config: Record<string, any> = {};

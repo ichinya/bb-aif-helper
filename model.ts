@@ -13,6 +13,7 @@ export const actionSchema = z.object({
 export const snapshotSchema = z.object({
   schemaVersion: z.literal('aif-chat/v1'), collectedAt: z.string(), fingerprint: z.string(),
   inputsFingerprint: z.string().length(64).nullable().default(null),
+  versionsCheckedAt: z.string().optional(),
   cache: z.object({ source: z.enum(['live', 'memory', 'saved']), refreshing: z.boolean(), refreshError: z.boolean() }).optional(),
   root: z.string(), runtime: z.string(), configured: z.boolean(),
   profile: z.enum(['none', 'upstream', 'aifhub-classic', 'aifhub-openspec', 'aifhub-ultra', 'invalid']),
@@ -43,8 +44,9 @@ export const runSchema = requestSchema.extend({ fingerprint: z.string().length(6
 export const hostInputSchema = z.object({ root: z.string().min(1).max(4096), target: z.string().max(1000), phase: phaseSchema,
   runtime: z.string().max(100), sourceRepo: z.string().max(4096), checkUpdates: z.boolean(),
   upstreamRepo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), upstreamRef: z.string().max(200),
+  cachedVersions: z.object({ versions: snapshotSchema.shape.versions, checkedAt: z.string() }).nullable().default(null),
 }).strict();
-export type HostInput = z.infer<typeof hostInputSchema>;
+export type HostInput = z.input<typeof hostInputSchema>;
 export const suggestionRequestSchema = z.object({ threadId: z.string().min(1).max(200) }).strict();
 export const suggestionActionSchema = suggestionRequestSchema.extend({
   sourceKey: z.string().length(64), commandId: z.string().max(100).regex(/^aif(?:-[a-z0-9]+)*$/),

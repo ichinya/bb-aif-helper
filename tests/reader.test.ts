@@ -8,6 +8,16 @@ import { collectSnapshot, parseYaml, safeRelative, taskList, lastGate } from '..
 import { fixture } from './fixtures.ts';
 const input = (root: string, target = '') => ({ root, target, phase: 'plan' as const, runtime: 'codex-app', sourceRepo: '', checkUpdates: false, upstreamRepo: 'lee-to/ai-factory', upstreamRef: '' });
 
+test('cached CLI/source versions are reused while project and extension metadata remain live', async () => {
+  const f = await fixture(true); try {
+    const cached = { globalCli: '9.0.0', globalSource: '/cached/package.json', installed: null, sourceVersion: '9.0.0', sourceWorktreeVersion: '9.0.0', sourceSha: 'a'.repeat(40), sourceDirty: false };
+    const s = await collectSnapshot({ ...input(f.root), sourceRepo: '/does-not-exist', cachedVersions: { versions: cached, checkedAt: '2026-11-03T00:00:00Z' } });
+    assert.equal(s.versions.globalCli, '9.0.0'); assert.equal(s.versions.sourceVersion, '9.0.0');
+    assert.equal(s.versions.installed, '2.21.0'); assert.equal(s.extensions[0].installedVersion, '1.8.1');
+    assert.equal(s.versionsCheckedAt, '2026-11-03T00:00:00Z');
+  } finally { await f.cleanup(); }
+});
+
 test('check input fingerprint ignores phase, detects tracked and untracked byte changes, and fails open on limits', async () => {
   const f = await fixture();
   const exec = promisify(execFile);

@@ -17,6 +17,24 @@ const app = await loadPluginApp(() => import('../app.tsx'));
 const props = { attributes: { phase: 'plan' }, source: '::aif-chat{phase="plan"}', message: { id: 'msg_1', threadId: 'thr_test', turnId: 'turn_1', projectId: 'proj_test' }, openWorkspaceFile: null };
 function data() { const s = snapshot(); s.actions = workflowActions(s); return s; }
 
+test('matching updater buttons are inside version details, with extension versions in the short line', async () => {
+  const s = snapshot({ skills: ['aif', 'aif-analyze'], extensions: [{ name: 'aifhub-extension', recordedVersion: '1.8.1', installedVersion: '1.8.1', source: 'local', state: 'present', contributions: [] }] });
+  s.versions.globalCli = s.versions.installed = s.versions.sourceVersion = s.versions.sourceWorktreeVersion = '2.21.0';
+  s.upstream = { ...s.upstream, version: '2.21.0', checkedAt: new Date().toISOString() };
+  s.actions = workflowActions(s);
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s } });
+  try {
+    const setup = await slot.findByRole('button', { name: 'Запустить aif-analyze' });
+    const card = setup.closest('section')!;
+    assert.match(card.querySelector('.aif-versions')!.textContent!, /aifhub-extension.*1.8.1/);
+    const update = slot.getByRole('button', { name: 'Обновить AI Factory', hidden: true });
+    assert(update.closest('.aif-details')); assert(!setup.closest('.aif-details'));
+    assert(slot.getByRole('button', { name: 'Обновить расширения', hidden: true }).closest('.aif-details'));
+    const check = slot.getByRole('button', { name: 'Проверить версию в GitHub', hidden: true }) as HTMLButtonElement;
+    assert.equal(check.disabled, true); assert.match(check.title, /Следующая проверка/);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('configuration errors do not hide the installation update button', async () => {
   const s = snapshot({ profile: 'invalid', target: null, diagnostics: ['Выбранный план/change не найден в допустимых артефактах.'] }); s.actions = workflowActions(s);
   const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s } });

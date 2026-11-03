@@ -5,6 +5,7 @@ import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/tes
 import plugin, { cardDirective } from '../server.ts';
 import { snapshot } from './fixtures.ts';
 import { workflowActions } from '../workflow.ts';
+import { VERSION_TTL } from '../versions.ts';
 
 async function setup() {
   let value = snapshot(); value.actions = workflowActions(value);
@@ -15,21 +16,69 @@ async function setup() {
   let events: any[] = [];
   let collections = 0;
   let collectBlock: Promise<void> | null = null;
+  let collectFailure = false;
+  const hostInputs: any[] = [];
   let thread = makeThreadResponse({ id: 'thr_test', projectId: 'proj_test', environmentId: 'env_test', status: 'idle', runtime: { displayStatus: 'idle' } });
   const h = createFakePluginHost({ pluginId: 'aif-chat', agentSkillIds: ['aif-chat'], experimental_hostEntry: true,
     sdk: {
       threads: { get: async () => thread, events: { list: async (args: any) => { assert(Number(args.limit) <= 100); return events; } }, output: async () => ({ output }), send: async () => { sends++; if (failSend) throw new Error('lost connection'); return {} as any; }, interactions: { list: async () => Array.from({ length: pending }, () => ({})) as any } },
       environments: { get: async () => ({ id: 'env_test', projectId: 'proj_test', path: '/project', hostId: 'host_test', status: 'ready', lifecycle: { phase: 'active' } }) as any },
     },
-    experimental_callHostRpc: async () => { collections++; if (collectBlock) await collectBlock; return structuredClone(value); },
+    experimental_callHostRpc: async ({ input }) => { collections++; hostInputs.push(structuredClone(input)); if (collectBlock) await collectBlock; if (collectFailure) throw new Error('host unavailable'); return structuredClone(value); },
   });
   await plugin(h.bb);
   return { ...h, get value() { return value; }, set value(v) { value = v; }, get sends() { return sends; },
     get collections() { return collections; }, setCollectBlock(block: Promise<void> | null) { collectBlock = block; },
+    get hostInputs() { return hostInputs; }, setCollectFailure(fails: boolean) { collectFailure = fails; },
     setEvents(rows: any[]) { events = rows; }, setOutput(text: string | null) { output = text; }, setQueued(count: number) { thread = { ...thread, queuedMessageCount: count }; },
     setFailure(v: boolean) { failSend = v; }, setPending(v: number) { pending = v; }, setActive(v: boolean) { thread = { ...thread, status: v ? 'active' : 'idle', runtime: { displayStatus: v ? 'active' : 'idle' } }; } };
 }
 function runInput(fingerprint = 'a'.repeat(64)) { return { threadId: 'thr_test', target: '.ai-factory/plans/demo.md', phase: 'plan', fingerprint, actionId: 'improve', requestId: randomUUID() }; }
+
+test('version probes are cached for a day across force requests and plugin reload, then expire', async () => {
+  const h = await setup(); let live = h.harness; let api = h.bb;
+  try {
+    h.value.upstream = { ...h.value.upstream, version: '2.21.0' };
+    const request = { threadId: 'thr_test', phase: 'plan', force: true, checkUpdates: true };
+    const first = await live.behavior.callRpc('status', request) as any;
+    assert.equal(h.hostInputs[0].checkUpdates, true); assert.equal(h.hostInputs[0].cachedVersions, null);
+    await live.behavior.callRpc('status', request);
+    assert.equal(h.hostInputs[1].checkUpdates, false); assert(h.hostInputs[1].cachedVersions);
+    const next = await live.lifecycle.reload(plugin); live = next.harness; api = next.bb;
+    await live.behavior.callRpc('status', request);
+    assert.equal(h.hostInputs[2].checkUpdates, false); assert(h.hostInputs[2].cachedVersions);
+    api.storage.database().prepare('UPDATE local_versions SET at = ?').run(Date.now() - VERSION_TTL - 1);
+    await api.storage.kv.set('upstream:host_test:lee-to/ai-factory:', { ...first.upstream, checkedAt: new Date(Date.now() - VERSION_TTL - 1).toISOString() });
+    await live.behavior.callRpc('status', request);
+    assert.equal(h.hostInputs[3].checkUpdates, true); assert.equal(h.hostInputs[3].cachedVersions, null);
+  } finally { await live.lifecycle.dispose(); }
+});
+
+test('a failed remote version attempt still enforces the daily retry interval', async () => {
+  const h = await setup(); try {
+    h.setCollectFailure(true);
+    await assert.rejects(h.harness.behavior.callRpc('status', { threadId: 'thr_test', checkUpdates: true }));
+    h.setCollectFailure(false);
+    const next = await h.harness.behavior.callRpc('status', { threadId: 'thr_test', checkUpdates: true }) as any;
+    assert.equal(h.hostInputs[0].checkUpdates, true); assert.equal(h.hostInputs[1].checkUpdates, false);
+    assert(next.upstream.checkedAt); assert(next.upstream.error);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
+test('explicit maintenance invalidates local version samples without bypassing remote limits', async () => {
+  const h = await setup(); try {
+    await h.harness.behavior.callRpc('status', { threadId: 'thr_test', force: true });
+    await h.harness.behavior.callRpc('run', { ...runInput(), actionId: 'update-factory' });
+    assert(h.hostInputs[1].cachedVersions);
+    await h.harness.behavior.callRpc('status', { threadId: 'thr_test', force: true });
+    assert.equal(h.hostInputs[2].cachedVersions, null);
+    await h.harness.behavior.emitThreadEvent('thread.idle', { thread: makeThreadResponse({ id: 'thr_test' }), lastAssistantText: null });
+    await h.harness.behavior.callRpc('status', { threadId: 'thr_test', force: true });
+    assert.equal(h.hostInputs[3].cachedVersions, null);
+    await h.harness.behavior.callRpc('status', { threadId: 'thr_test', force: true });
+    assert(h.hostInputs[4].cachedVersions); assert(h.hostInputs.every(input => !input.checkUpdates));
+  } finally { await h.harness.lifecycle.dispose(); }
+});
 
 test('invalid selection exposes a guarded updater RPC without enabling ordinary workflow', async () => {
   const h = await setup(); try {
