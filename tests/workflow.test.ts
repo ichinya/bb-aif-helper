@@ -82,6 +82,32 @@ test('quality and CI actions do not label configuration as a successful check', 
   assert.match(a.find(v => v.id === 'ci')!.command, /aif-chat ci$/);
   assert.match(a.find(v => v.id === 'ci-setup')!.command, /aif-ci$/);
 });
+
+test('supplementary checks do not become mandatory next actions or prevent the normal completion route', () => {
+  for (const profile of ['upstream', 'aifhub-classic', 'aifhub-openspec'] as const) {
+    const s = snapshot({ profile, phase: 'verify' });
+    s.target!.tasks[0].done = true;
+    s.checks = [{ id: 'verify', label: 'Verify', state: 'reported-pass', detail: '', path: 'verify.md', required: true },
+      ...['rules', 'security', 'review', 'qa-plan', 'qa', 'quality', 'ci'].map(id => ({ id, label: id, state: 'notrun' as const, detail: '', path: null, required: false }))];
+    const actions = workflowActions(s);
+    assert.equal(actions[0].id, profile === 'upstream' ? 'verify' : 'done');
+    for (const id of ['check-rules', 'check-security', 'check-review', 'qa-prepare', 'qa-run', 'quality', 'ci']) {
+      assert.equal(actions.find(a => a.id === id)?.group, 'check');
+    }
+    s.checks[2].state = 'fail';
+    assert.equal(workflowActions(s)[0].id, 'fix-findings'); // optional launch does not erase actual findings
+  }
+});
+
+test('optional OpenSpec doctor is scoped, read-only and never offered for upstream or legacy ultra', () => {
+  const s = snapshot({ profile: 'aifhub-openspec' }); s.target!.kind = 'openspec'; s.target!.id = 'selected-change';
+  const doctor = workflowActions(s).find(a => a.id === 'check-mode')!;
+  assert.equal(doctor.group, 'check'); assert.equal(doctor.command, '$aif-mode doctor --change "selected-change"');
+  assert.match(doctor.reason, /Read-only/); assert(!doctor.command.includes('--fix'));
+  for (const profile of ['upstream', 'aifhub-classic', 'aifhub-ultra'] as const) {
+    assert(!workflowActions({ ...s, profile }).some(a => a.id === 'check-mode'));
+  }
+});
 test('prompts bind target and scope; Codex and slash runtimes use distinct prefixes', () => {
   const s = snapshot();
   assert.match(actionPrompt(s, workflowActions(s)[0]), /expectedFingerprint/);

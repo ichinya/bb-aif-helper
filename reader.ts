@@ -346,6 +346,8 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
       }
       s.checks.push({ id: 'quality', label: 'Качество кода', state: 'unknown', detail: 'Выберите существующие команды lint/types/tests/build по стеку проекта', path: null, required: false },
         { id: 'ci', label: 'CI', state: 'unknown', detail: 'Нужен фактический run для текущего commit; pipeline-файл не означает PASS', path: null, required: false });
+      if (native) s.checks.push({ id: 'mode', label: 'Конфигурация и артефакты', state: 'unknown',
+        detail: 'Read-only doctor выбранного change; не запускает sync, init или исправления. Результат проверяет владелец workflow.', path: null, required: false });
     } else if (s.candidates.length > 1) s.diagnostics.push('Несколько планов/change: выберите цель, автоматического выбора по времени нет.');
   } catch (e: any) { s.profile = 'invalid'; s.diagnostics.push(String(e.message).slice(0, 300)); }
   if (s.extensions.some(e => e.name === 'aifhub-extension' && e.state !== 'present')) {

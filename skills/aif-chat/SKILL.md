@@ -45,7 +45,13 @@ The supported command is singular `ai-factory extension update` (all registered 
 
 **Запустить aif** is used without AIFHub; **Запустить aif-analyze** is selected for a healthy installed `aifhub-extension`. A missing setup skill stays disabled. Setup never receives the selected plan as an argument.
 
-## CI subcommand
+## Optional workflow checks
+
+Rules, security, review, QA preparation/execution, quality audit, existing CI inspection and OpenSpec mode doctor are supplementary navigation branches, not an automatic chain. Their buttons stay beside their check rows. Mark them as optional only when no known required policy applies; project/skill requirements always take precedence. Skipping an optional check does not invent a failure, while an actual blocking FAIL still prevents advancement. Do not classify verify, coverage or done readiness as optional merely because they appear in this section.
+
+OpenSpec mode diagnostics use `aif-mode doctor --change <id>` for the selected canonical change. This is separate from mandatory readiness inside done and does not authorize sync, init, --fix, providers setup or finalization. Doctor is not offered for upstream or legacy ultra.
+
+## Existing CI inspection
 
 If invoked as `aif-chat ci`, inspect the existing CI pipeline/run for the current Git HEAD through the project's existing connector/CLI. Report commit SHA, run URL and per-job outcome. Do not generate pipeline configuration, push commits or trigger/retry workflows just to inspect their status. If no provider or run is available, say UNKNOWN/NOTRUN and give the smallest next action. Then refresh the card without inventing a green CI result.
 

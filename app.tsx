@@ -3,7 +3,7 @@ import { definePluginApp, useRpc, useRealtime, useComposer, type PluginMessageDi
 import type { rpcContract } from './contract.ts';
 import { phaseSchema, type Snapshot, type Phase, type Action, type Suggestions } from './model.ts';
 import { parseReplyGate } from './gate.ts';
-import { rowActions } from './check-actions.ts';
+import { rowActions, supplementaryChecks } from './check-actions.ts';
 import { updateInVersionDetails, VERSION_TTL } from './versions.ts';
 import { contextSetupInDetails } from './workflow.ts';
 import './aif-chat.css';
@@ -105,8 +105,9 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
         {renderActions(snapshot.actions.filter(a => contextSetupInDetails(snapshot, a.id)))}
       </details>}
       {snapshot.target && <details className="aif-checks"><summary>Что проверить <span className="aif-muted">· из чата: {snapshot.checks.filter(c => c.chat).length} · отчётов PASS: {snapshot.checks.filter(c => c.state === 'reported-pass').length}</span></summary>
+        <p className="aif-muted aif-small">Дополнительные проверки — по выбору. Правила проекта и обязательные gates могут требовать их перед завершением; блокирующий FAIL сохраняет силу.</p>
         <p className="aif-muted aif-small">Галочки задач и результаты проверок независимы. Актуальность evidence подтверждает владелец workflow.</p>
-        <ul>{snapshot.checks.map(c => <li key={c.id}><div><strong>{c.label}</strong>{c.required && <small className="aif-required">нужно для завершения</small>}</div>
+        <ul>{snapshot.checks.map(c => <li key={c.id}><div><strong>{c.label}</strong>{c.required ? <small className="aif-required">нужно для завершения</small> : supplementaryChecks.has(c.id) && <small className="aif-required" title="Дополнительный шаг flow; действующие правила проекта сохраняют приоритет">по выбору</small>}</div>
           <span className={`aif-check-state aif-${c.chat ? c.chat.result.status === 'pass' ? 'reported-pass' : c.chat.result.status : c.state}`} title={c.detail}>{c.chat ? `${c.chat.result.status.toUpperCase()} · из чата` : checkLabels[c.state]}</span>
           {snapshot.actions.filter(a => a.id === rowActions[c.id]).map(renderAction)}
           {c.path && openFile && <button className="aif-link" onClick={() => { if (!openFile(c.path!)) setError('Просмотр файла недоступен в этой поверхности.'); }}>Отчёт</button>}

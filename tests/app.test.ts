@@ -121,6 +121,27 @@ test('only gate JSON gets a collapsed renderer; original code remains available 
   } finally { slot.lifecycle.unmount(); }
 });
 
+test('supplementary rows are optional without downgrading known required gates or launching checks', async () => {
+  const s = snapshot({ profile: 'aifhub-openspec' }); s.target!.kind = 'openspec';
+  s.checks = ['rules', 'security', 'review', 'qa-plan', 'qa', 'quality', 'ci', 'mode'].map(id => ({
+    id, label: id, state: 'notrun', detail: '', path: null, required: id === 'rules',
+  }));
+  s.actions = workflowActions(s); let runs = 0;
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s, run: () => { runs++; return { sent: true, message: 'Отправлено' }; } } });
+  try {
+    await slot.findByText(/Дополнительные проверки — по выбору/);
+    const required = slot.getByText('rules').closest('li')!;
+    assert.match(required.textContent!, /нужно для завершения/);
+    assert(!required.textContent!.includes('по выбору'));
+    for (const label of ['security', 'review', 'qa-plan', 'qa', 'quality', 'ci', 'mode']) {
+      assert.match(slot.getByText(label).closest('li')!.textContent!, /по выбору/);
+    }
+    const doctor = slot.getByRole('button', { name: 'Проверить конфигурацию', hidden: true });
+    assert.equal(doctor.closest('li'), slot.getByText('mode').closest('li'));
+    fireEvent.click(slot.getByText(/Что проверить/)); assert.equal(runs, 0);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('malformed and interrupted gate failures remain visible outside collapsed JSON', () => {
   const renderer = app.codeFenceRenderers.find(r => r.id === 'gate-data')!;
   for (const [code, status, expected] of [['{bad', 'closed', /некорректный JSON/], ['{', 'unclosed', /не закрыт/]] as const) {

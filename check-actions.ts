@@ -3,7 +3,9 @@ import type { Snapshot } from './model.ts';
 export const rowActions: Record<string, string> = {
   verify: 'check-verify', rules: 'check-rules', security: 'check-security', review: 'check-review',
   'qa-plan': 'qa-prepare', qa: 'qa-run', quality: 'quality', ci: 'ci', readiness: 'done',
+  mode: 'check-mode',
 };
+export const supplementaryChecks = new Set(['rules', 'security', 'review', 'qa-plan', 'qa', 'quality', 'ci', 'mode']);
 const commands: Record<string, string> = {
   'aif-verify': 'verify', 'aif-rules-check': 'rules', 'aif-security-checklist': 'security', 'aif-review': 'review',
 };

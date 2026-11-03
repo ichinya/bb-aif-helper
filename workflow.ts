@@ -73,6 +73,9 @@ export function workflowActions(s: Snapshot): Action[] {
   add('check-rules', 'Правила проекта', 'aif-rules-check', 'check', 'Rules gate; при необходимости сохранить durable evidence', s.profile === 'aifhub-openspec' ? arg : '');
   add('check-security', 'Безопасность', 'aif-security-checklist', 'check', 'Проверка безопасности в заявленном scope', '');
   add('check-review', 'Code review', 'aif-review', 'check', 'Review текущих изменений', '');
+  if (s.profile === 'aifhub-openspec' && s.target.kind === 'openspec') {
+    add('check-mode', 'Проверить конфигурацию', 'aif-mode', 'check', 'Read-only doctor выбранного change; без исправлений и синхронизации', ` doctor --change ${JSON.stringify(s.target.id)}`);
+  }
   add('qa-prepare', 'Подготовить QA-сценарии', 'aif-qa', 'check', 'Подготовка сценариев не означает прохождение QA', '');
   add('qa-run', 'Пройти QA-сценарии', 'aif-qa-check', 'check', 'Выбрать human/agent режим; записать результаты сценариев', '');
   add('quality', 'Качество кода', 'aif-quality-setup', 'check', 'Read-only аудит стека и существующих проверок; команды не запускаются автоматически', ' audit');

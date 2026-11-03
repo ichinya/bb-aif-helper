@@ -83,6 +83,20 @@ test('snapshot reads installed extensions and canonical tasks without writes or 
     assert.notEqual((await collectSnapshot(input(f.root))).fingerprint, s.fingerprint);
   } finally { await f.cleanup(); }
 });
+
+test('OpenSpec doctor is an optional unknown check while policy-required rules stay required', async () => {
+  const f = await fixture(true, true); try {
+    await f.write('openspec/changes/demo/tasks.md', '# Tasks\n- [ ] Implement');
+    const s = await collectSnapshot(input(f.root));
+    assert.equal(s.profile, 'aifhub-openspec');
+    assert.equal(s.checks.find(c => c.id === 'rules')?.required, true);
+    const doctor = s.checks.find(c => c.id === 'mode')!;
+    assert.equal(doctor.required, false); assert.equal(doctor.state, 'unknown'); assert.equal(doctor.path, null);
+    assert.equal(s.actions.find(a => a.id === 'check-mode')?.command, '$aif-mode doctor --change "demo"');
+    await f.write('.ai-factory/config.yaml', 'aifhub:\n  tools:\n    openspec: true\n  openspec:\n    requireRulesPassForDone: false\n');
+    assert.equal((await collectSnapshot(input(f.root))).checks.find(c => c.id === 'rules')?.required, false);
+  } finally { await f.cleanup(); }
+});
 test('missing project version remains unknown, no fallback to global CLI version', async () => {
   const f = await fixture(); try { await f.write('.ai-factory.json', { agents: [] }); assert.equal((await collectSnapshot(input(f.root))).versions.installed, null); }
   finally { await f.cleanup(); }
