@@ -228,7 +228,7 @@ export default async function plugin(bb: BbPluginApi) {
     const hidden = dismissed?.sourceKey === sourceKey ? dismissed.ids : [];
     const prefix = ['codex', 'codex-app'].includes(snapshot.runtime) ? '$' : '/';
     const view: Suggestions = { sourceKey, fingerprint: snapshot.fingerprint, threadState: snapshot.threadState, gate: reply.gate, gateError: reply.error,
-      items: ids.filter(id => !hidden.includes(id)).map(id => ({ id, command: `${prefix}${id}`,
+      items: ids.filter(id => !hidden.includes(id)).map(id => ({ id, command: `${prefix}${reply.commands.get(id) ?? id}`,
         available: !reply.error && !blockedByGate(id, reply.gate) && !unchangedCheck(snapshot, id) && snapshot.profile !== 'invalid' && (snapshot.skills.includes(id) || id === 'aif-chat'),
         reason: reply.error ?? (blockedByGate(id, reply.gate) ? 'Gate содержит блокирующие проблемы.' : unchangedCheck(snapshot, id) ? unchangedReason : snapshot.profile === 'invalid' ? 'Проверьте конфигурацию проекта.' : !(snapshot.skills.includes(id) || id === 'aif-chat') ? `Skill не установлен для ${snapshot.runtime}` : reply.next === id ? reply.gate?.suggested_next?.reason ?? 'Следующий шаг из gate' : 'Команда из последнего ответа агента'),
       })) };

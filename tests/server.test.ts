@@ -323,6 +323,37 @@ test('suggestion click sends only the selected skill once and preserves the shar
     assert.deepEqual(after.items.map((i: any) => i.id), ['aif-explore']);
   } finally { await h.harness.lifecycle.dispose(); }
 });
+
+test('slash finalization commands become runtime-correct suggestions and sync dispatch retains its subcommand', async () => {
+  for (const runtime of ['codex-app', 'claude']) {
+    const h = await setup(); try {
+      h.value.runtime = runtime;
+      h.setOutput('Следующие отдельные шаги: `/aif-mode sync`, затем `/aif-commit`. Commit, push и deploy не выполнялись.');
+      const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+      const prefix = runtime === 'codex-app' ? '$' : '/';
+      assert.deepEqual(view.items.map((i: any) => i.command), [prefix + 'aif-mode sync', prefix + 'aif-commit']);
+      assert(view.items.every((i: any) => i.available)); assert.equal(h.sends, 0);
+      await h.harness.behavior.callRpc('runSuggestion', suggestionInput(view, 'aif-mode'));
+      const sent = h.harness.inspection.sdk.callsTo('threads.send')[0][0] as any;
+      assert.equal(sent.input[0].text, prefix + 'aif-mode sync'); assert.equal(h.sends, 1);
+      const after = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+      assert.deepEqual(after.items.map((i: any) => i.id), ['aif-commit']);
+    } finally { await h.harness.lifecycle.dispose(); }
+  }
+});
+
+test('a blocking gate also blocks a slash prose commit while keeping fix available', async () => {
+  const h = await setup(); try {
+    h.setOutput('/aif-commit\n' + gateText({ status: 'fail', blocking: true,
+      blockers: [{ id: 'verify-1', severity: 'error', summary: 'Incomplete implementation.' }],
+      suggested_next: { command: '/aif-fix', reason: 'Resolve findings.' } }));
+    const view = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+    assert.equal(view.items.find((i: any) => i.id === 'aif-commit').available, false);
+    assert.equal(view.items.find((i: any) => i.id === 'aif-fix').available, true);
+    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(view, 'aif-commit')));
+    assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
 test('stale answers, changed files, hidden suggestions and missing skills cannot dispatch', async () => {
   const h = await setup(); try {
     h.setOutput('$aif-plan');
