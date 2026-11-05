@@ -1,25 +1,24 @@
-Постоянная кнопка AI Factory в заголовке открывает панель справа: версии, следующие действия и прогресс доступны без поиска сообщений. На узком экране кнопка переходит в меню заголовка. Интерфейс — на русском языке.
+## What you get
 
-## Возможности
+- Open the persistent AI Factory panel from the thread header to choose a plan, see completed tasks and launch the next step.
+- Follow AI Factory or AIFHub classic, OpenSpec and legacy ultra workflows with separate task progress and check results.
+- Without a project installation, use the bundled research → Markdown plan → implementation → verification → commit flow. Install AI Factory through a separate button when you want its full workflow.
+- Run rules, security, review, QA, quality and CI actions beside their check rows. Optional navigation preserves project-required gates.
+- Launch commands suggested in the last agent reply. Both `$aif…` and `/aif…` are recognized, the fixed `aif-mode sync` subcommand is retained, and each suggestion can be dismissed independently.
+- Inspect CLI, project, Git and extension versions. Matching versions move update buttons into the version details; version probes use a daily cache.
 
-- Команды `$aif…` из последнего ответа агента над полем ввода: запуск по нажатию и отдельный крестик для скрытия каждого предложения.
-- Разбор финального `aif-gate-result`: статус, blockers, затронутые файлы и кнопка `suggested_next` с причиной; блокирующие результаты останавливают переход к реализации/финализации.
-- Кнопки «Составить план», «Улучшить план», «Выполнить/продолжить», «Проверить» и переход к владельцу финализации.
-- Read-only прогресс задач, отдельные QA/rules/security/review/quality/CI результаты и ссылки на доступные отчёты.
-- Версии глобального CLI, установки проекта, локального Git checkout и расширений. Проверка upstream — по запросу.
-- Кнопка обновления CLI и проектных skills; запуск `aif` либо `aif-analyze` при установленном AIFHub, даже до выбора плана.
-- Поддержка upstream, AIFHub classic, OpenSpec-native и legacy ultra без смешивания их артефактов.
+## How it works
 
-## Как работает
+Opening a panel reads status. Each action sends one scoped request to the agent in the same thread, using its ordinary permissions and provider quota or billing. Busy threads and pending questions prevent another launch. Draft text is preserved.
 
-Открытие панели только читает статус. Кнопка отправляет запрос текущему агенту в этот же чат с обычными разрешениями BB. Выполнение использует лимиты или оплату выбранного провайдера. Пока агент занят или ожидает ответы, новый запуск блокируется.
+Gate results show PASS, WARN or FAIL, blockers and the suggested next action. Historical results and report files remain distinct from current verification. The helper does not manufacture evidence, mark tasks complete or run the next stage automatically.
 
-Предложения сохраняют черновик. Скрытие действует для текста последнего ответа и переживает перезагрузку; крестик ничего не запускает. Распознаются только имена команд без аргументов, с проверкой установленного skill и актуальности ответа перед отправкой.
+Basic plans live in `.bb-aif-helper/plans/`. Installation reuses an existing CLI where available and preserves these files; it does not automatically migrate plans or add extensions.
 
-Плагин не создаёт evidence и не проставляет галочки самостоятельно. PASS в отчёте не считается доказательством актуального прохождения проверки. Агенту доступны инструмент `aif_chat_status` и CLI `bb plugin run aif-chat status`.
+## Requirements
 
-## Требования
+Requires BB 0.48+ and a compatible Plugin SDK runtime, 0.6.104+. The interface is currently in Russian. Verified on Windows; other operating systems have not been separately qualified.
 
-BB 0.48+ с совместимым SDK 0.6.104+ и установленный в проекте AI Factory для workflow-действий. AIFHub необязателен. Проверено на Windows; другие ОС отдельно не проверены. GitHub-версия запрашивается явно через публичные endpoints без токена.
+The bundled workflow needs no AI Factory installation. Full AI Factory/AIFHub actions require their separately installed project skills. Actions use your configured BB agent; its provider may require an account or payment. Git-backed commit actions require Git.
 
-Документация: [BB AIF Helper](https://github.com/ichinya/bb-aif-helper).
+[Documentation and source](https://github.com/ichinya/bb-aif-helper)

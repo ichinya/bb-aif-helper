@@ -31,7 +31,7 @@
     "bbPluginSdk": ">=0.6.104"
   },
   "bb": {
-    "name": "AI Factory Chat [Experimental]",
+    "name": "BB AIF Helper",
     "description": "AI Factory and AIFHub versions, workflow panel, plan progress and command suggestions in BB chat.",
     "branding": {
       "icon": "Workflow"
