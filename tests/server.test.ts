@@ -210,6 +210,57 @@ test('button sends exactly to selected thread with current plan and no permissio
   } finally { await h.harness.lifecycle.dispose(); }
 });
 
+test('basic exploration and installation are click-only scoped prompts without invoking missing skills', async () => {
+  for (const actionId of ['basic-explore', 'basic-install']) {
+    const h = await setup(); try {
+      h.value = snapshot({ configured: false, profile: 'none', phase: 'unknown', target: null, candidates: [], skills: [] });
+      const view = await h.harness.behavior.callRpc('status', { threadId: 'thr_test', force: true }) as any;
+      assert.equal(h.sends, 0);
+      const input = { ...runInput(view.fingerprint), phase: 'unknown', target: '', actionId };
+      h.setPending(1); await assert.rejects(h.harness.behavior.callRpc('run', input)); h.setPending(0);
+      h.setActive(true); await assert.rejects(h.harness.behavior.callRpc('run', input)); h.setActive(false);
+      await h.harness.behavior.callRpc('run', input);
+      const sent = h.harness.inspection.sdk.callsTo('threads.send')[0][0] as any;
+      assert(sent.input[0].text.startsWith('BB AIF Helper:'));
+      assert.equal(sent.input[1].visibility, 'agent-only');
+      if (actionId === 'basic-explore') {
+        assert.match(sent.input[1].text, /Исследуй текущую задачу/); assert(!sent.input[1].text.includes('npm install'));
+      } else assert.match(sent.input[1].text, /ai-factory init --agents codex-app/);
+      assert.equal(h.sends, 1);
+    } finally { await h.harness.lifecycle.dispose(); }
+  }
+});
+
+test('basic advancement obeys the last gate and cannot execute without its selected plan', async () => {
+  const h = await setup(); try {
+    const plan = { path: '.bb-aif-helper/plans/demo.md', title: 'Demo', id: 'demo', kind: 'basic' as const, tasks: [{ id: '1', title: 'Work', done: false }] };
+    h.value = snapshot({ configured: false, profile: 'none', phase: 'unknown', skills: [], target: plan, candidates: [{ ...plan }], worktree: { hasUncommitted: true } });
+    const view = await h.harness.behavior.callRpc('status', { threadId: 'thr_test', force: true }) as any;
+    const input = { ...runInput(view.fingerprint), phase: 'unknown', target: plan.path };
+    h.setOutput(gateText({ status: 'fail', blocking: true, blockers: [{ id: '1', severity: 'error', summary: 'Blocked.' }], suggested_next: null }));
+    for (const actionId of ['basic-implement', 'basic-commit']) {
+      await assert.rejects(h.harness.behavior.callRpc('run', { ...input, actionId }));
+    }
+    h.setOutput(null); h.value.target = null; h.value.candidates = [];
+    await assert.rejects(h.harness.behavior.callRpc('run', { ...input, actionId: 'basic-implement' }));
+    assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
+test('successful installation releases only the basic UI selection and activates the installed workflow', async () => {
+  const h = await setup(); try {
+    const plan = { path: '.bb-aif-helper/plans/demo.md', title: 'Demo', id: 'demo', kind: 'basic' as const, tasks: [{ id: '1', title: 'Work', done: false }] };
+    h.value = snapshot({ configured: false, profile: 'none', phase: 'unknown', skills: [], target: plan, candidates: [{ ...plan }] });
+    await h.harness.behavior.runCli(['show', '--thread', 'thr_test', '--target', plan.path]);
+    assert(await h.bb.storage.kv.get('selection:thr_test'));
+    h.value = snapshot({ phase: 'unknown', target: null, candidates: [] });
+    const view = await h.harness.behavior.callRpc('status', { threadId: 'thr_test', force: true }) as any;
+    assert.equal(view.profile, 'upstream'); assert(!view.actions.some((a: any) => a.id.startsWith('basic-')));
+    assert.equal(await h.bb.storage.kv.get('selection:thr_test'), undefined);
+    assert.equal(h.hostInputs.at(-1).target, ''); assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
 test('commit after archive rechecks files, active work and the last gate before sending a scoped request', async () => {
   const h = await setup(); try {
     h.value = snapshot({ profile: 'aifhub-openspec', phase: 'done', target: null, candidates: [], worktree: { hasUncommitted: true } });

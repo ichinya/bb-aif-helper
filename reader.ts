@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { parseDocument } from 'yaml';
 import { snapshotSchema, type HostInput, type Snapshot } from './model.ts';
 import { workflowActions } from './workflow.ts';
+import { BASIC_PLAN_ROOT, usesBasicWorkflow } from './basic-workflow.ts';
 
 const exec = promisify(execFile);
 const MAX_FILE = 1024 * 1024;
@@ -284,6 +285,12 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
         const rel = `${openRoot}/changes/${item.name}/tasks.md`;
         if (await read.read(rel)) s.candidates.push({ path: rel, title: item.name, kind: 'openspec' });
       }
+    } else if (usesBasicWorkflow(s)) {
+      for (const item of await read.list(BASIC_PLAN_ROOT)) {
+        if (item.directory || !item.name.endsWith('.md')) continue;
+        const rel = `${BASIC_PLAN_ROOT}/${item.name}`;
+        if (await read.read(rel)) s.candidates.push({ path: rel, title: item.name.slice(0, -3), kind: 'basic' });
+      }
     } else {
       for (const rel of [str(paths.plan) ?? '.ai-factory/PLAN.md', str(paths.fix_plan) ?? '.ai-factory/FIX_PLAN.md']) {
         if (await read.read(rel)) s.candidates.push({ path: rel, title: path.posix.basename(rel), kind: rel === (str(paths.fix_plan) ?? '.ai-factory/FIX_PLAN.md') ? 'fix' : 'fast' });
@@ -304,7 +311,7 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
       selected = s.candidates.find(v => v.path === rel || v.path === `${rel}/index.md` || v.path === `${rel}/tasks.md`);
       if (!selected) throw new Error('Выбранный план/change не найден в допустимых артефактах.');
     }
-    if (!selected && !input.target && branch) {
+    if (!selected && !input.target && branch && !usesBasicWorkflow(s)) {
       const stem = branch.replaceAll('/', '-');
       const matching = s.candidates.filter(v => v.title === stem || v.title.replace(/^\d{4}_/, '') === stem);
       if (matching.length === 1) selected = matching[0];
@@ -329,26 +336,28 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
           if (legacy.verification?.verdict) s.diagnostics.push(`Classic verification: ${String(legacy.verification.verdict).slice(0, 60)}; актуальность отдельно не подтверждена.`);
         }
       }
-      const evidenceDir = selected.kind === 'classic' ? `${planRoot}/${id}` : `${qaRoot}/${id}`;
-      const policy = obj(aifhub.openspec);
-      for (const [gate, label] of [['verify', 'Соответствие плану'], ['rules', 'Правила проекта'], ['security', 'Безопасность'], ['review', 'Code review']]) {
-        const rel = `${evidenceDir}/${gate === 'rules' && selected.kind === 'classic' ? 'gates/rules' : gate}.md`;
-        const report = await read.read(rel);
-        const parsed = report ? lastGate(report, gate) : null;
-        s.checks.push({ id: gate, label, state: parsed ? parsed.status === 'pass' ? 'reported-pass' : parsed.status as 'warn' | 'fail' : report ? 'unknown' : 'notrun',
-          detail: parsed ? `${parsed.status.toUpperCase()} в отчёте; привязка к текущим inputs не подтверждена` : report ? 'Отчёт есть, валидный gate block не найден' : 'Evidence не найдено; факт запуска неизвестен',
-          path: report ? rel : null, required: native && (gate === 'verify' || gate === 'rules' && policy.requireRulesPassForDone !== false) });
+      if (selected.kind !== 'basic') {
+        const evidenceDir = selected.kind === 'classic' ? `${planRoot}/${id}` : `${qaRoot}/${id}`;
+        const policy = obj(aifhub.openspec);
+        for (const [gate, label] of [['verify', 'Соответствие плану'], ['rules', 'Правила проекта'], ['security', 'Безопасность'], ['review', 'Code review']]) {
+          const rel = `${evidenceDir}/${gate === 'rules' && selected.kind === 'classic' ? 'gates/rules' : gate}.md`;
+          const report = await read.read(rel);
+          const parsed = report ? lastGate(report, gate) : null;
+          s.checks.push({ id: gate, label, state: parsed ? parsed.status === 'pass' ? 'reported-pass' : parsed.status as 'warn' | 'fail' : report ? 'unknown' : 'notrun',
+            detail: parsed ? `${parsed.status.toUpperCase()} в отчёте; привязка к текущим inputs не подтверждена` : report ? 'Отчёт есть, валидный gate block не найден' : 'Evidence не найдено; факт запуска неизвестен',
+            path: report ? rel : null, required: native && (gate === 'verify' || gate === 'rules' && policy.requireRulesPassForDone !== false) });
+        }
+        for (const [id, label, filename] of [['qa-plan', 'QA-сценарии', 'test-cases.md'], ['qa', 'Прохождение QA', 'qa-check.md'], ['coverage', 'Spec coverage', 'coverage.json'], ['readiness', 'Done readiness', 'done-readiness.json']]) {
+          const rel = `${evidenceDir}/${filename}`;
+          const report = await read.read(rel);
+          s.checks.push({ id, label, state: report ? 'unknown' : 'notrun', detail: report ? 'Артефакт существует; результат и актуальность проверяет владелец' : 'Артефакт не найден', path: report ? rel : null,
+            required: native && id === 'coverage' && policy.requireSpecCoverageForDone !== false });
+        }
+        s.checks.push({ id: 'quality', label: 'Качество кода', state: 'unknown', detail: 'Выберите существующие команды lint/types/tests/build по стеку проекта', path: null, required: false },
+          { id: 'ci', label: 'CI', state: 'unknown', detail: 'Нужен фактический run для текущего commit; pipeline-файл не означает PASS', path: null, required: false });
+        if (native) s.checks.push({ id: 'mode', label: 'Конфигурация и артефакты', state: 'unknown',
+          detail: 'Read-only doctor выбранного change; не запускает sync, init или исправления. Результат проверяет владелец workflow.', path: null, required: false });
       }
-      for (const [id, label, filename] of [['qa-plan', 'QA-сценарии', 'test-cases.md'], ['qa', 'Прохождение QA', 'qa-check.md'], ['coverage', 'Spec coverage', 'coverage.json'], ['readiness', 'Done readiness', 'done-readiness.json']]) {
-        const rel = `${evidenceDir}/${filename}`;
-        const report = await read.read(rel);
-        s.checks.push({ id, label, state: report ? 'unknown' : 'notrun', detail: report ? 'Артефакт существует; результат и актуальность проверяет владелец' : 'Артефакт не найден', path: report ? rel : null,
-          required: native && id === 'coverage' && policy.requireSpecCoverageForDone !== false });
-      }
-      s.checks.push({ id: 'quality', label: 'Качество кода', state: 'unknown', detail: 'Выберите существующие команды lint/types/tests/build по стеку проекта', path: null, required: false },
-        { id: 'ci', label: 'CI', state: 'unknown', detail: 'Нужен фактический run для текущего commit; pipeline-файл не означает PASS', path: null, required: false });
-      if (native) s.checks.push({ id: 'mode', label: 'Конфигурация и артефакты', state: 'unknown',
-        detail: 'Read-only doctor выбранного change; не запускает sync, init или исправления. Результат проверяет владелец workflow.', path: null, required: false });
     } else if (s.candidates.length > 1) s.diagnostics.push('Несколько планов/change: выберите цель, автоматического выбора по времени нет.');
   } catch (e: any) { s.profile = 'invalid'; s.diagnostics.push(String(e.message).slice(0, 300)); }
   if (s.extensions.some(e => e.name === 'aifhub-extension' && e.state !== 'present')) {

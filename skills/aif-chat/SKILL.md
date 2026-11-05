@@ -5,6 +5,16 @@ description: Show AI Factory/AIFHub versions, workflow buttons, selected plan ta
 
 # AI Factory Chat
 
+## Projects without AI Factory
+
+When the project has no AI Factory setup (profile none), the panel offers a separate installer and a bundled exploration → Markdown plan → implementation → verification → commit workflow. These actions send human-readable requests plus agent-only instructions to the current agent, not unavailable skill invocations. Opening the panel runs nothing. Exploration is read-only and uses bundled guidance adapted from upstream aif-explore; no remote prompt fetch is needed.
+
+Basic plans live under `.bb-aif-helper/plans/<slug>.md` with a `## Tasks` checkbox list and separate verification instructions. The plugin reads their canonical paths and progress. Planning edits only its plan, implementation follows the selected tasks, verification reports actual checks and NOTRUN/UNKNOWN, and commit preserves unrelated files and existing authorization boundaries. Each click authorizes only its chosen step; never start the rest of the chain implicitly. Do not switch provider plan modes automatically or invent PASS/evidence from checkboxes.
+
+The installer reuses an existing CLI or installs it through its normal package manager, initializes the selected supported runtime, and verifies metadata/skills. It must not add MCP/extensions, replace a linked CLI, overwrite user files or start workflow implicitly. After successful setup, the managed basic selection is released; existing plan files remain, with no automatic migration. Invalid existing installation/configuration stays guarded rather than falling back around its owner gates.
+
+## Installed workflow
+
 The persistent **AI Factory** button in the thread header opens the workflow tab in the right panel; on narrow layouts BB moves it into the header menu. Opening this panel only reads status and never dispatches a workflow. Users do not need to find a previous transcript card. The panel follows the owning thread and its stored selection/phase.
 
 The panel uses a persisted SQLite snapshot cache: saved data may appear immediately while revalidating in the background. The footer shows the data source and collection time. Ordinary display can reuse a snapshot for one minute; busy state and questions are read separately. The refresh button, native status tool/CLI and action dispatch force fresh file reads. Never describe a saved/cached snapshot as newly verified evidence. Refreshing the cache does not run a model, workflow or automatic GitHub query.

@@ -8,6 +8,27 @@ import { collectSnapshot, parseYaml, safeRelative, taskList, lastGate } from '..
 import { fixture } from './fixtures.ts';
 const input = (root: string, target = '') => ({ root, target, phase: 'plan' as const, runtime: 'codex-app', sourceRepo: '', checkUpdates: false, upstreamRepo: 'lee-to/ai-factory', upstreamRef: '' });
 
+test('without AI Factory the reader discovers basic plans and progress without creating setup or QA artifacts', async () => {
+  const f = await fixture(); try {
+    await fs.unlink(path.join(f.root, '.ai-factory.json'));
+    await f.write('.bb-aif-helper/plans/one.md', '# One\n## Tasks\n- [x] One\n- [ ] Two\n## Проверки\n- [x] Not a task');
+    await f.write('.bb-aif-helper/plans/two.md', '# Two\n## Tasks\n- [ ] Work');
+    await promisify(execFile)('git', ['-C', f.root, 'init', '--quiet', '--initial-branch=one'], { windowsHide: true });
+    const ambiguous = await collectSnapshot(input(f.root));
+    assert.equal(ambiguous.profile, 'none'); assert.equal(ambiguous.target, null);
+    assert(!ambiguous.actions.some(a => a.id === 'basic-implement'));
+    const selected = await collectSnapshot(input(f.root, '.bb-aif-helper/plans/one.md'));
+    assert.equal(selected.target?.kind, 'basic'); assert.equal(selected.target?.tasks.length, 2);
+    assert.equal(selected.target?.tasks[0].done, true); assert.equal(selected.checks.length, 0);
+    assert.equal(selected.actions.find(a => a.id === 'basic-implement')?.label, 'Продолжить выполнение');
+    assert.equal(selected.upstream.checkedAt, null);
+    await assert.rejects(fs.stat(path.join(f.root, '.ai-factory.json')));
+    await assert.rejects(fs.stat(path.join(f.root, '.ai-factory/qa')));
+    const escaped = await collectSnapshot(input(f.root, '../secret.md'));
+    assert.equal(escaped.profile, 'invalid'); assert(!escaped.actions.some(a => a.id.startsWith('basic-')));
+  } finally { await f.cleanup(); }
+});
+
 test('cached CLI/source versions are reused while project and extension metadata remain live', async () => {
   const f = await fixture(true); try {
     const cached = { globalCli: '9.0.0', globalSource: '/cached/package.json', installed: null, sourceVersion: '9.0.0', sourceWorktreeVersion: '9.0.0', sourceSha: 'a'.repeat(40), sourceDirty: false };

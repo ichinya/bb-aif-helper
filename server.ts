@@ -10,6 +10,7 @@ import { attachChatChecks, readChatChecks, type ChatCheck } from './check-histor
 import { lockUnchangedChecks, unchangedCheck, unchangedReason } from './check-actions.ts';
 import { SnapshotCache } from './snapshot-cache.ts';
 import { versionSampleFresh } from './versions.ts';
+import { BASIC_PLAN_ROOT } from './basic-workflow.ts';
 export { rpcContract } from './contract.ts';
 type Selection = { environmentId: string; target: string; phase: Phase };
 type Delivery = { requestId: string; fingerprint: string; actionId: string; state: 'attempting' | 'sent' | 'uncertain'; at: number };
@@ -192,6 +193,12 @@ export default async function plugin(bb: BbPluginApi) {
       };
       return !readLocalVersions(versionKey) || dirty?.key === versionKey ? serial(`local-versions:${versionKey}`, collect) : collect();
     }, fresh || checkUpdates);
+    // After installation, basic plans remain files but are not AI Factory plans.
+    // Release only our managed selection, never reinterpret it as a native plan.
+    if (snapshot.configured && target.startsWith(BASIC_PLAN_ROOT + '/')) {
+      if (selection?.target === target) await bb.storage.kv.delete(`selection:${input.threadId}`);
+      return status({ ...input, target: '', phase: 'unknown' }, false, true);
+    }
     snapshot.upstream = await bb.storage.kv.get<Snapshot['upstream']>(remoteKey) ?? snapshot.upstream;
     if (snapshot.phase !== phase) {
       snapshot.fingerprint = createHash('sha256').update(JSON.stringify([snapshot.fingerprint, phase])).digest('hex');
@@ -288,7 +295,8 @@ export default async function plugin(bb: BbPluginApi) {
       if (candidate?.disabledReason === 'unchanged') throw new Error(unchangedReason);
       const action = candidate?.available ? candidate : undefined;
       if (!action) throw new Error('Действие недоступно для текущего плана/runtime.');
-      const skill = action.command.match(/^[/$](aif(?:-[a-z0-9]+)*)\b/)?.[1];
+      const skill = action.id === 'basic-commit' ? 'aif-commit' : action.id === 'basic-implement' ? 'aif-implement'
+        : action.command.match(/^[/$](aif(?:-[a-z0-9]+)*)\b/)?.[1];
       if (skill && ['aif-commit', 'aif-done', 'aif-archive', 'aif-implement'].includes(skill)) {
         const reply = analyzeReply((await bb.sdk.threads.output({ threadId: input.threadId })).output ?? '');
         if (reply.error || blockedByGate(skill, reply.gate)) throw new Error('Последний gate содержит блокирующие проблемы или некорректен. Сначала разберите его результат.');
@@ -301,7 +309,7 @@ export default async function plugin(bb: BbPluginApi) {
       const next = [...deliveries.slice(-29), record];
       await bb.storage.kv.set(`deliveries:${input.threadId}`, next);
       try {
-        if (action.id === 'update-factory' || action.id === 'update-extensions') {
+        if (action.id === 'update-factory' || action.id === 'update-extensions' || action.id === 'basic-install') {
           const versionKey = versionScopes.get(input.threadId);
           if (versionKey) {
             await bb.storage.kv.set(`updating-versions:${input.threadId}`, { key: versionKey });

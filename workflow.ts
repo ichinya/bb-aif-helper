@@ -1,4 +1,5 @@
 import type { Action, Snapshot } from './model.ts';
+import { basicActions, basicPrompt, usesBasicWorkflow } from './basic-workflow.ts';
 
 /** Task progress guides navigation without declaring an active agent invocation. */
 export const planExecutionStarted = (s: Snapshot) => !!s.target && (
@@ -26,6 +27,7 @@ export function workflowActions(s: Snapshot): Action[] {
   // Maintenance can repair an outdated installation even when a selected plan
   // or workflow configuration cannot be resolved. Other actions stay blocked.
   if (s.profile === 'invalid') return maintenance.filter(action => action.id === 'update-factory' || action.id === 'update-extensions');
+  if (usesBasicWorkflow(s)) return basicActions(s);
   if (!s.configured) return maintenance;
   const arg = s.target ? ` ${JSON.stringify(s.target.kind === 'openspec' || s.target.kind === 'classic' ? s.target.id : '@' + s.target.path)}` : '';
   const add = (id: string, label: string, skill: string, group: Action['group'], reason: string, target = arg) => {
@@ -90,6 +92,8 @@ export function workflowActions(s: Snapshot): Action[] {
 }
 
 export function actionPrompt(s: Snapshot, action: Action): string {
+  const basic = basicPrompt(s, action);
+  if (basic) return basic;
   if (action.id === 'update-factory' || action.id === 'update-extensions') return [
     `Обнови ${action.id === 'update-extensions' ? 'зарегистрированные расширения с обязательным предварительным обновлением AI Factory' : 'AI Factory и затем зарегистрированные расширения'} по явному нажатию кнопки пользователем в этом чате. Контекст установки: ${JSON.stringify({ root: s.root, versions: s.versions, configured: s.configured, extensions: s.extensions })}.`,
     'Сначала проверь фактическое происхождение используемого CLI, конфигурацию проекта, зарегистрированные расширения и текущие локальные изменения. Выполняй этапы последовательно, не параллельно.',

@@ -6,6 +6,7 @@ import { parseReplyGate } from './gate.ts';
 import { rowActions, supplementaryChecks } from './check-actions.ts';
 import { updateInVersionDetails, VERSION_TTL } from './versions.ts';
 import { contextSetupInDetails } from './workflow.ts';
+import { BASIC_PLAN_ROOT, usesBasicWorkflow } from './basic-workflow.ts';
 import './aif-chat.css';
 
 const phaseNames: Record<Phase, string> = { unknown: 'Контекст задачи', explore: 'Исследование', plan: 'Планирование', improve: 'Уточнение плана', implement: 'Выполнение плана', verify: 'Проверка', fix: 'Исправление замечаний', done: 'Финализация' };
@@ -44,7 +45,10 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
     const id = ++sequence.current;
     try {
       const value = await rpc.call('status', { threadId, target, phase, checkUpdates, force });
-      if (mounted.current && id === sequence.current) { setSnapshot(value); setError(''); }
+      if (mounted.current && id === sequence.current) {
+        setSnapshot(value); setError('');
+        if (value.configured && target.startsWith(BASIC_PLAN_ROOT + '/')) setTarget('');
+      }
     } catch (e) {
       if (mounted.current && id === sequence.current) { setError(e instanceof Error ? e.message : String(e)); setSnapshot(null); }
     } finally { if (mounted.current && id === sequence.current) setLoading(false); }
@@ -88,7 +92,7 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
       <div className="aif-maintenance" role="group" aria-label="Обновление и настройка AI Factory">{renderActions(snapshot.actions.filter(a => a.group === 'maintenance' && !updateInVersionDetails(snapshot, a.id) && !contextSetupInDetails(snapshot, a.id)))}</div>
       <p className="aif-stage" title={snapshot.phaseSource}>{busy ? <span className="aif-live-dot" aria-hidden="true" /> : <span className="aif-idle-dot" aria-hidden="true" />} {phaseNames[snapshot.phase]}
         <span className="aif-muted"> · {snapshot.pendingQuestions ? `ожидаю ответы: ${snapshot.pendingQuestions}` : busy ? 'агент занят' : snapshot.threadState === 'error' ? 'ошибка выполнения BB' : 'агент свободен'}</span></p>
-      {!snapshot.configured && <p className="aif-muted">AI Factory в этой рабочей папке не настроен. Обновление доступно для существующего CLI; для запуска aif сначала установите skills проекта.</p>}
+      {usesBasicWorkflow(snapshot) && <p className="aif-muted" aria-label="Базовый workflow">Без AI Factory доступен встроенный flow: исследование → план → выполнение → проверка → коммит. Установка — отдельная кнопка; планы сохраняются в .bb-aif-helper/plans/.</p>}
       {snapshot.candidates.length > 0 && <label className="aif-target">План / change
         <select aria-label="Выбранный план или change" value={snapshot.target?.path ?? target} onChange={e => { setTarget(e.target.value); setNotice(''); }}>
           {!snapshot.target && <option value="">Выберите задачу</option>}
@@ -104,7 +108,7 @@ function WorkflowCard({ threadId, initialTarget = '', phase = 'unknown', openFil
         <p className="aif-muted aif-small">Выполнение плана уже начато. Настройка контекста запускается отдельно и не продолжает выбранный план.</p>
         {renderActions(snapshot.actions.filter(a => contextSetupInDetails(snapshot, a.id)))}
       </details>}
-      {snapshot.target && <details className="aif-checks"><summary>Что проверить <span className="aif-muted">· из чата: {snapshot.checks.filter(c => c.chat).length} · отчётов PASS: {snapshot.checks.filter(c => c.state === 'reported-pass').length}</span></summary>
+      {snapshot.target && snapshot.checks.length > 0 && <details className="aif-checks"><summary>Что проверить <span className="aif-muted">· из чата: {snapshot.checks.filter(c => c.chat).length} · отчётов PASS: {snapshot.checks.filter(c => c.state === 'reported-pass').length}</span></summary>
         <p className="aif-muted aif-small">Дополнительные проверки — по выбору. Правила проекта и обязательные gates могут требовать их перед завершением; блокирующий FAIL сохраняет силу.</p>
         <p className="aif-muted aif-small">Галочки задач и результаты проверок независимы. Актуальность evidence подтверждает владелец workflow.</p>
         <ul>{snapshot.checks.map(c => <li key={c.id}><div><strong>{c.label}</strong>{c.required ? <small className="aif-required">нужно для завершения</small> : supplementaryChecks.has(c.id) && <small className="aif-required" title="Дополнительный шаг flow; действующие правила проекта сохраняют приоритет">по выбору</small>}</div>

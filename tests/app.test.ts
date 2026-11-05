@@ -45,6 +45,23 @@ test('configuration errors do not hide the installation update button', async ()
   } finally { slot.lifecycle.unmount(); }
 });
 
+test('without AI Factory the card shows a separate installer and usable bundled flow without automatic dispatch', async () => {
+  const s = snapshot({ configured: false, profile: 'none', target: null, candidates: [], skills: [], phase: 'unknown' });
+  s.actions = workflowActions(s); let runs = 0;
+  const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s, run: (input: any) => {
+    assert.equal(input.actionId, 'basic-explore'); runs++; return { sent: true, message: 'Отправлено' };
+  } } });
+  try {
+    const install = await slot.findByRole('button', { name: 'Установить AI Factory' }) as HTMLButtonElement;
+    assert.equal(install.disabled, false); assert(install.closest('.aif-maintenance'));
+    assert.match(slot.getByLabelText('Базовый workflow').textContent!, /исследование → план → выполнение → проверка → коммит/);
+    const explore = slot.getByRole('button', { name: 'Исследовать задачу' }) as HTMLButtonElement;
+    assert.equal(explore.disabled, false); assert.equal(runs, 0);
+    assert.equal(slot.queryByRole('button', { name: /Запустить aif/ }), null);
+    fireEvent.click(explore); await waitFor(() => assert.equal(runs, 1));
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('a started plan shows resume while context setup is available only under its spoiler', async () => {
   const s = snapshot({ profile: 'aifhub-openspec', phase: 'unknown', skills: ['aif-analyze', 'aif-implement', 'aif-improve'],
     extensions: [{ name: 'aifhub-extension', recordedVersion: '1.8.1', installedVersion: '1.8.1', source: 'local', state: 'present', contributions: [] }] });

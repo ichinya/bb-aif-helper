@@ -27,7 +27,7 @@ export const snapshotSchema = z.object({
   extensions: z.array(z.object({ name: z.string(), recordedVersion: z.string().nullable(), installedVersion: z.string().nullable(),
     source: z.string(), state: z.enum(['present', 'missing', 'invalid', 'version_mismatch']), contributions: z.array(z.string()) })),
   skills: z.array(z.string()), candidates: z.array(z.object({ path: z.string(), title: z.string(), kind: z.string() })),
-  target: z.object({ path: z.string(), title: z.string(), id: z.string(), kind: z.enum(['fast', 'full', 'fix', 'ultra', 'classic', 'openspec']),
+  target: z.object({ path: z.string(), title: z.string(), id: z.string(), kind: z.enum(['fast', 'full', 'fix', 'ultra', 'classic', 'openspec', 'basic']),
     tasks: z.array(z.object({ id: z.string(), title: z.string(), done: z.boolean() })) }).nullable(),
   checks: z.array(z.object({ id: z.string(), label: z.string(), state: z.enum(['notrun', 'reported-pass', 'warn', 'fail', 'unknown']),
     detail: z.string(), path: z.string().nullable(), required: z.boolean(),

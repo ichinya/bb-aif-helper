@@ -154,11 +154,11 @@ test('missing analyze is disabled rather than silently invoking a different setu
   const a = workflowActions(s).find(a => a.id === 'setup-context')!;
   assert.equal(a.command, '$aif-analyze'); assert.equal(a.available, false);
 });
-test('uninitialized project can update an existing CLI without manufacturing a runnable aif', () => {
+test('uninitialized project offers basic flow and installation without manufacturing a runnable aif', () => {
   const s = snapshot({ configured: false, profile: 'none', skills: [], target: null, candidates: [] });
-  assert(workflowActions(s).find(a => a.id === 'update-factory')?.available);
-  assert.equal(workflowActions(s).find(a => a.id === 'setup-context')?.available, false);
-  assert(workflowActions(s).every(a => a.group === 'maintenance'));
+  assert(workflowActions(s).find(a => a.id === 'basic-install')?.available);
+  assert(workflowActions(s).find(a => a.id === 'basic-explore')?.available);
+  assert(!workflowActions(s).some(a => a.id === 'setup-context'));
 });
 test('update prompt separates package update from project refresh and preserves linked sources', () => {
   const s = snapshot(); const a = workflowActions(s).find(a => a.id === 'update-factory')!;
