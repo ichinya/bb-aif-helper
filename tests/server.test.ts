@@ -209,6 +209,28 @@ test('button sends exactly to selected thread with current plan and no permissio
     assert(!JSON.stringify(calls[0]).includes('permissionMode')); assert(!JSON.stringify(calls[0]).includes('model'));
   } finally { await h.harness.lifecycle.dispose(); }
 });
+
+test('commit after archive rechecks files, active work and the last gate before sending a scoped request', async () => {
+  const h = await setup(); try {
+    h.value = snapshot({ profile: 'aifhub-openspec', phase: 'done', target: null, candidates: [], worktree: { hasUncommitted: true } });
+    const view = await h.harness.behavior.callRpc('status', { threadId: 'thr_test', phase: 'done', force: true }) as any;
+    assert.equal(view.actions[0].id, 'commit'); assert.equal(h.sends, 0);
+    const input = { ...runInput(view.fingerprint), target: '', phase: 'done', actionId: 'commit' };
+    h.setActive(true); await assert.rejects(h.harness.behavior.callRpc('run', input));
+    h.setActive(false); h.setPending(1); await assert.rejects(h.harness.behavior.callRpc('run', input)); h.setPending(0);
+    h.setOutput(gateText({ status: 'fail', blocking: true, blockers: [{ id: 'security', severity: 'error', summary: 'Blocked.' }],
+      suggested_next: { command: '/aif-fix', reason: 'Fix first.' } }));
+    await assert.rejects(h.harness.behavior.callRpc('run', input)); assert.equal(h.sends, 0);
+    h.setOutput('Sync completed.');
+    h.value.worktree.hasUncommitted = false;
+    await assert.rejects(h.harness.behavior.callRpc('run', input)); assert.equal(h.sends, 0);
+    h.value.worktree.hasUncommitted = true;
+    await h.harness.behavior.callRpc('run', input);
+    const sent = h.harness.inspection.sdk.callsTo('threads.send')[0][0] as any;
+    assert.equal(sent.input[0].text, '$aif-commit');
+    assert.match(sent.input[1].text, /сохрани несвязанные изменения/); assert.equal(h.sends, 1);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
 test('stale card is rejected before dispatch', async () => {
   const h = await setup(); try {
     await assert.rejects(h.harness.behavior.callRpc('run', runInput('b'.repeat(64)))); assert.equal(h.sends, 0);

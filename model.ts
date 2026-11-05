@@ -16,6 +16,7 @@ export const snapshotSchema = z.object({
   versionsCheckedAt: z.string().optional(),
   cache: z.object({ source: z.enum(['live', 'memory', 'saved']), refreshing: z.boolean(), refreshError: z.boolean() }).optional(),
   root: z.string(), runtime: z.string(), configured: z.boolean(),
+  worktree: z.object({ hasUncommitted: z.boolean().nullable() }).default({ hasUncommitted: null }),
   profile: z.enum(['none', 'upstream', 'aifhub-classic', 'aifhub-openspec', 'aifhub-ultra', 'invalid']),
   threadState: z.string(),
   pendingQuestions: z.number().int().nonnegative().nullable(),

@@ -213,6 +213,20 @@ test('card renders real buttons, read-only progress and sends selected action on
     assert.equal(slot.queryAllByRole('checkbox').length, 0);
   } finally { slot.lifecycle.unmount(); }
 });
+
+test('dirty files show commit without an active plan and busy state disables it without sending', async () => {
+  for (const busy of [false, true]) {
+    const s = snapshot({ profile: 'aifhub-openspec', phase: 'done', target: null, candidates: [],
+      worktree: { hasUncommitted: true }, threadState: busy ? 'active' : 'idle' });
+    s.actions = workflowActions(s); let runs = 0;
+    const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s, run: () => { runs++; return { sent: true, message: 'Отправлено' }; } } });
+    try {
+      const commit = await slot.findByRole('button', { name: 'Подготовить коммит' }) as HTMLButtonElement;
+      assert.equal(commit.disabled, busy); assert.equal(runs, 0);
+      assert.equal(slot.queryAllByRole('button', { name: 'Подготовить коммит' }).length, 1);
+    } finally { slot.lifecycle.unmount(); }
+  }
+});
 test('busy thread shows waiting state and disables action buttons', async () => {
   const s = data(); s.threadState = 'awaiting_input'; s.pendingQuestions = 2;
   const slot = renderSlot(app.messageDirectives[0], props, { rpc: { status: () => s } });

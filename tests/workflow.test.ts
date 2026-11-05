@@ -21,6 +21,30 @@ test('AIFHub plan routes through improve; upstream permits immediate implementat
   assert(!actions.some(a => a.id === 'implement'));
 });
 
+test('uncommitted project files offer one scoped commit first even after archive or with ambiguous plans', () => {
+  for (const profile of ['upstream', 'aifhub-classic', 'aifhub-openspec'] as const) {
+    const s = snapshot({ profile, phase: 'done', target: null, candidates: [], worktree: { hasUncommitted: true } });
+    const actions = workflowActions(s);
+    assert.equal(actions[0].id, 'commit'); assert.equal(actions[0].command, '$aif-commit');
+    assert.equal(actions.filter(a => a.id === 'commit').length, 1);
+    assert.match(actionPrompt(s, actions[0]), /сохрани несвязанные изменения/);
+    s.candidates = [{ path: 'one.md', title: 'one', kind: 'full' }, { path: 'two.md', title: 'two', kind: 'full' }];
+    assert.equal(workflowActions(s)[0].id, 'commit');
+    s.target = snapshot().target; s.target!.tasks[0].done = true;
+    assert.equal(workflowActions(s).filter(a => a.id === 'commit').length, 1);
+    assert(actionPrompt(s, workflowActions(s)[0]).includes(s.target!.path));
+  }
+});
+
+test('clean or unknown worktree does not invent a commit offer; unavailable skill and invalid profile stay guarded', () => {
+  for (const hasUncommitted of [false, null]) {
+    assert(!workflowActions(snapshot({ target: null, candidates: [], worktree: { hasUncommitted } })).some(a => a.id === 'commit'));
+  }
+  const s = snapshot({ target: null, candidates: [], worktree: { hasUncommitted: true }, skills: [] });
+  assert.equal(workflowActions(s).find(a => a.id === 'commit')?.available, false);
+  assert(!workflowActions({ ...s, profile: 'invalid' }).some(a => a.id === 'commit'));
+});
+
 test('partial progress resumes an unknown-stage plan without declaring an active invocation', () => {
   for (const profile of ['upstream', 'aifhub-classic', 'aifhub-openspec'] as const) {
     const s = snapshot({ profile, phase: 'unknown' });

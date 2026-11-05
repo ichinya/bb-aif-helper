@@ -179,7 +179,7 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
   const s: Snapshot = {
     schemaVersion: 'aif-chat/v1', collectedAt: new Date().toISOString(), fingerprint: '', inputsFingerprint: null, root, runtime: input.runtime, configured: false,
     profile: 'none', phase: input.phase, phaseSource: input.phase === 'unknown' ? 'Этап не указан; состояние файлов не доказывает активный вызов' : 'Этап указан агентом в карточке; выполнение проверяется BB',
-    threadState: 'unknown',
+    threadState: 'unknown', worktree: { hasUncommitted: null },
     pendingQuestions: null,
     versions: { globalCli: null, globalSource: null, installed: null, sourceVersion: null, sourceWorktreeVersion: null, sourceSha: null, sourceDirty: null },
     upstream: { version: null, sha: null, ref: null, checkedAt: null, error: null },
@@ -276,6 +276,7 @@ export async function collectSnapshot(input: HostInput, signal?: AbortSignal): P
   const head = await git(root, ['rev-parse', 'HEAD'], signal);
   const dirtyDiff = await git(root, ['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', '--', '.'], signal);
   const status = await git(root, ['status', '--porcelain', '--untracked-files=normal', '--ignore-submodules=all'], signal);
+  s.worktree.hasUncommitted = status === null ? null : status.length > 0;
   try {
     if (native) {
       for (const item of await read.list(`${safeRelative(openRoot)}/changes`)) {

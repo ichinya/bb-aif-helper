@@ -36,8 +36,11 @@ export function workflowActions(s: Snapshot): Action[] {
   const verify = s.checks.find(c => c.id === 'verify');
   const failed = s.checks.some(c => c.state === 'fail');
   const hasFindings = s.checks.some(c => c.state === 'fail');
+  if (s.worktree.hasUncommitted === true) {
+    add('commit', 'Подготовить коммит', 'aif-commit', 'next', 'В текущем проекте есть незакоммиченные файлы; сначала проверить diff и состав коммита', '');
+  }
   if (!s.target) {
-    if (s.candidates.length > 1) return maintenance;
+    if (s.candidates.length > 1) return [...result, ...maintenance];
     add('plan', 'Составить план', 'aif-plan', 'next', 'Подготовить план новой задачи', hub ? ' full' : '');
     if (!hub && s.phase === 'explore') add('fix-new', 'Исправить проблему', 'aif-fix', 'next', 'Для исследованного дефекта; команда уточнит fix-now / plan-first', '');
     add('explore', 'Продолжить исследование', 'aif-explore', 'next', 'Уточнить требования до реализации', '');
@@ -97,5 +100,6 @@ export function actionPrompt(s: Snapshot, action: Action): string {
     'После операции обнови карточку через aif_chat_status с принудительным чтением. Не запускай реализацию или проверки приложения.',
   ].join('\n');
   if (action.id === 'setup-context') return `${action.command}\n\nПользователь явно нажал запуск настройки контекста проекта. Примени именно ${action.command} в текущем проекте по установленному skill-контракту. Не выполняй план и не начинай реализацию. Когда настройка завершится, обнови карточку через aif_chat_status. Выбранный ранее план не является аргументом этой команды.`;
+  if (action.id === 'commit') return `${action.command}\n\nКонтекст кнопки AI Factory: ${JSON.stringify({ target: s.target?.path ?? null, profile: s.profile, expectedFingerprint: s.fingerprint })}.\nПользователь выбрал подготовку коммита. Примени установленный aif-commit в текущем проекте: сначала перечитай правила, git status и diff, определи относящиеся к задаче изменения и сообщение коммита. Незакоммиченные файлы не означают, что все они согласованы для включения: сохрани несвязанные изменения и не добавляй все файлы автоматически. Соблюдай действующие gates и разрешения на коммит; не выполняй push или публикацию без отдельного разрешения. Активный план может отсутствовать после архивации. После действия обнови карточку через aif_chat_status.`;
   return `${action.command}\n\nКонтекст кнопки AI Factory: ${JSON.stringify({ target: s.target?.path ?? null, profile: s.profile, expectedFingerprint: s.fingerprint })}.\nВыполни выбранное действие в текущей задаче. Сначала перечитай выбранный план/change и действующие правила. Для новой задачи без описания запроси её описание. Не расширяй scope. Не считай старые отчёты актуальным PASS без проверки evidence. После этапа обнови карточку через aif_chat_status или bb plugin run aif-chat show. Нажатие этой кнопки не разрешает другие действия workflow.`;
 }
