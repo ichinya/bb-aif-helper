@@ -63,8 +63,26 @@ test('thread toggle calls setAifMode and reflects the pressed state', async () =
   } finally { slot.lifecycle.unmount(); }
 });
 
-test('the app never inserts the AI Factory tag into the composer by itself', () => {
-  assert.deepEqual(app.composerCustomizations.map(c => c.id).sort(), ['aif-mode', 'suggested-commands']);
+const pillBanner = app.composerCustomizations.find(c => c.id === 'aif-mode-pill')!.banners![0];
+const pillMention = { from: 0, to: 11, label: 'AI Factory', kind: 'plugin' as const, pluginId: 'test-plugin', provider: 'aif-mode', id: 'aif-mode', icon: null };
+
+test('the app never inserts the AI Factory tag by itself; a typed one leaves a command draft', async () => {
+  const slot = renderSlot(pillBanner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' } } });
+  try {
+    await act(async () => {});
+    assert.equal(slot.inspection.composer.draft.text, '');
+    assert.equal(slot.inspection.rpcCalls.length, 0, 'the banner reads nothing from the server');
+    await slot.behavior.setComposerText('fix @AI Factory');
+    assert.equal(slot.inspection.composer.draft.text, 'fix @AI Factory');
+  } finally { slot.lifecycle.unmount(); }
+  const typed = renderSlot(pillBanner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' }, text: '@AI Factory', mentions: [pillMention] } });
+  try {
+    await act(async () => {});
+    assert.equal(pillMentions(typed.inspection.composer.draft).length, 1, 'a plain message keeps the typed mention');
+    await typed.behavior.setComposerText('/aif-verify @AI Factory');
+    await waitFor(() => assert.equal(pillMentions(typed.inspection.composer.draft).length, 0));
+    assert.equal(typed.inspection.composer.draft.text, '/aif-verify ');
+  } finally { typed.lifecycle.unmount(); }
 });
 
 test('turning the mode off removes the pill from the draft', async () => {
@@ -102,8 +120,8 @@ test('«В работе» shows the requested model and warns on fallback and mi
   const tab = app.tabs.find(t => t.id === 'workflow')!;
   const slot = renderSlot(tab as any, { threadId: 'thr_working', environment: { id: 'env_working' } }, { rpc: { status: () => s, delegation } });
   try {
-    // The first render of the whole tab in this file; a cold Windows runner needs more than the default second.
-    const aifRow = (await slot.findByText('AIF · demo · 1', {}, { timeout: 10_000 })).closest('li')!;
+    // The first render of the whole tab in this file; a loaded Windows runner needs over 10 s (PR #3, run 45869464666).
+    const aifRow = (await slot.findByText('AIF · demo · 1', {}, { timeout: 30_000 })).closest('li')!;
     within(aifRow).getByText(/gpt-6\.2-sol · high/);
     within(aifRow).getByText(/Подмена: gpt-6\.2-sol → gpt-6\.2-mini \(отказ модели\)/);
     within(aifRow).getByText(/Ожидалась модель codex · gpt-6\.2-luna/);

@@ -3,11 +3,12 @@ import path from 'node:path';
 import { experimental_defineHostEntry } from '@get-bb/plugin-sdk';
 import type { ExperimentalHostRpcContext, ExperimentalHostWatchEvent } from '@get-bb/plugin-sdk';
 import { hostContract, hostSignals } from './contract.ts';
-import { collectSnapshot, readPlanText } from './reader.ts';
+import { collectSnapshot } from './reader.ts';
 import { readDelegation, writeDelegation } from './delegation.ts';
 import { savePlanDocument, markPlanVerified } from './plan-document.ts';
 import { WATCH_IGNORED, relevantChange } from './live-updates.ts';
 import { createWorktree, removeWorktree } from './worktree.ts';
+import { bringBack, headCommit, readBrief } from './parallel-git.ts';
 
 type Subscription = { dispose(): Promise<void> };
 type HostContext = ExperimentalHostRpcContext<typeof hostSignals>;
@@ -69,10 +70,13 @@ export default experimental_defineHostEntry({
   contract: hostContract,
   experimental_signals: hostSignals,
   handlers: {
-    collect: (input, context) => collectSnapshot(input, context.signal),
+    collect: async (input, context) => {
+      // The agent reads the delegation blocks straight from skill-context; keep them current after a plugin update.
+      await readDelegation(input.root).catch(() => undefined);
+      return collectSnapshot(input, context.signal);
+    },
     delegation: input => readDelegation(input.root),
     setDelegation: input => writeDelegation(input.root, input.choice, input.role),
-    planText: input => readPlanText(input.root, input.target),
     savePlan: async (input, context) => {
       const result = await savePlanDocument(input);
       await addSeparateWatches(input.root, context);
@@ -81,6 +85,9 @@ export default experimental_defineHostEntry({
     markPlanVerified: input => markPlanVerified(input),
     createWorktree: input => createWorktree(input),
     removeWorktree: input => removeWorktree(input),
+    headCommit: input => headCommit(input),
+    bringBack: input => bringBack(input),
+    readBrief: input => readBrief(input),
     watch: async (input, context) => {
       const root = input.root;
       if (watches.has(root)) return { ok: true as const };

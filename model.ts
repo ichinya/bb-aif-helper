@@ -134,3 +134,6 @@ export const delegationStateSchema = z.object({
   removedLegacy: z.boolean().optional(),
 });
 export type DelegationState = z.infer<typeof delegationStateSchema>;
+
+// Skills this plugin ships to agents (package.json bb.skills); their chips need no AI Factory install.
+export const PLUGIN_SKILLS = ['aif-chat', 'aif-scout'] as const;

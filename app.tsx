@@ -8,7 +8,7 @@ import { parseReplyGate } from './gate.ts';
 import { checkHelp, rowActions, supplementaryChecks, toolHelp } from './check-actions.ts';
 import { updateInVersionDetails, VERSION_TTL } from './versions.ts';
 import { contextSetupInDetails } from './workflow.ts';
-import { chipDraft } from './suggestions.ts';
+import { chipDraft, isCommandDraft } from './suggestions.ts';
 import { AIF_MENTION } from './aif-mode.ts';
 import { isBasicPlanPath, usesBasicWorkflow, isCompletedPlan } from './basic-workflow.ts';
 import { mountPlanPresentation } from './plan-presentation.ts';
@@ -1086,12 +1086,21 @@ function AifModeAction() {
   </button>;
 }
 
+/** Composer banner (invisible): a typed `@AI Factory` never stays in a `/aif-…` command, where its text would become arguments. */
+function AifPillStripper() {
+  const composer = useComposer();
+  const strip = isCommandDraft(composer.draft) && composer.draft.mentions.some(isAifPill);
+  useEffect(() => { if (strip) removeAifPill(composer); }, [composer, strip]);
+  return null;
+}
+
 export default definePluginApp(app => {
   app.slots.experimental_codeFenceRenderer({ id: 'gate-data', languages: ['aif-gate-result'], component: GateData });
   app.slots.experimental_codeFenceRenderer({ id: 'plan-document', languages: ['aif-plan'], component: PlanDocument });
   app.contentScripts.register({ id: 'plan-presentation', mount: mountPlanPresentation });
   app.composer.customize({ id: 'suggested-commands', scopes: ['thread'], banners: [{ id: 'commands', chrome: 'bare', component: SuggestedCommands }] });
   app.composer.customize({ id: 'aif-mode', scopes: ['new-thread', 'thread'], actions: [{ id: 'aif-mode', component: AifModeAction }] });
+  app.composer.customize({ id: 'aif-mode-pill', scopes: ['new-thread', 'thread'], banners: [{ id: 'aif-pill', chrome: 'bare', component: AifPillStripper }] });
   app.slots.messageDirective({ id: 'aif-chat', component: Directive });
   app.slots.experimental_threadContextCardSection({ id: 'workflow', title: 'AI Factory', group: '9_aif', order: 10, component: ContextCard });
   app.experimental_icons.register({ name: 'aif-factory', component: FactoryIcon });

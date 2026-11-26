@@ -5,7 +5,7 @@ import { hostContract, hostSignals, rpcContract, type ChipScoringView, type Dele
 import { DELEGATION_ROLES, delegationDefaultsSchema, modelSpec } from './delegation.ts';
 import { childModel, type ChildModel } from './child-model.ts';
 import type { DelegationChoice, DelegationDefaults, DelegationRole, DelegationState } from './delegation.ts';
-import { requestSchema, phaseSchema, snapshotSchema, chipScoringStateSchema, type CardRequest, type ChipScoringState, type Snapshot, type Phase, type Suggestions } from './model.ts';
+import { PLUGIN_SKILLS, requestSchema, phaseSchema, snapshotSchema, chipScoringStateSchema, type CardRequest, type ChipScoringState, type Snapshot, type Phase, type Suggestions } from './model.ts';
 import { actionPrompt, workflowActions, commitNavigationDeferred } from './workflow.ts';
 import { applyRan, applySkipped, RUN_CONFIRMED_STEPS } from './readiness.ts';
 import { analyzeReply, nextStepItems, withTopic, rulesSyncCommand } from './suggestions.ts';
@@ -16,7 +16,6 @@ import { SnapshotCache } from './snapshot-cache.ts';
 import { AIF_MENTION, aifMentionItems, aifModeInstructions, shouldContribute } from './aif-mode.ts';
 import { versionSampleFresh } from './versions.ts';
 import { DECISIONS_URL, decisionsRequest, decisionsResponseSchema, probabilitiesFor, scoringKey } from './chip-scoring.ts';
-import { parallelGroups } from './parallel-plan.ts';
 import { CHIP_SCORING_TAG, projectTag, threadTag } from './live-updates.ts';
 import { isBasicPlanPath, nativePlanInput } from './basic-workflow.ts';
 import { readChatPlan, type ChatPlanRecord } from './chat-plan.ts';
@@ -24,7 +23,8 @@ import { pendingConfirmation, asksToApplyPlanChanges } from './confirmation.ts';
 import { IMPROVE_APPROVAL, pendingImproveProposal } from './improve-approval.ts';
 import { readSessionBrief, sessionBriefBlocked, sessionBriefCommandAvailable, briefCommands, SESSION_BRIEF_COMMAND, type SessionBriefReport } from './session-brief.ts';
 import { GATE_EVIDENCE_COMMAND, gateEvidenceCommandAvailable } from './gate-evidence-command.ts';
-import { registerWorktreeProvider } from './worktree-provider.ts';
+import { registerWorktreeProvider, WORKTREE_PROVIDER_ID } from './worktree-provider.ts';
+import { waitWorker } from './worker-wait.ts';
 export { rpcContract } from './contract.ts';
 type Selection = { environmentId: string; target: string; phase: Phase; newTask?: boolean };
 type Delivery = { requestId: string; fingerprint: string; actionId: string; state: 'attempting' | 'sent' | 'uncertain'; at: number };
@@ -423,8 +423,11 @@ export default async function plugin(bb: BbPluginApi) {
     const contextBlock = snapshot.rulesSync ? 'Сначала синхронизируйте правила выбранного change.'
       : sessionBriefBlocked(snapshot) ? 'Сначала восстановите SessionBrief выбранного change.' : null;
     const specialChip = (id: string) => id === IMPROVE_APPROVAL || id === GATE_EVIDENCE_COMMAND || id === SESSION_BRIEF_COMMAND;
+    // Plugin skills ship with the plugin, so a broken project AI Factory config does not turn them off.
+    const pluginSkill = (id: string) => (PLUGIN_SKILLS as readonly string[]).includes(id);
+    const skillInstalled = (id: string) => snapshot.skills.includes(id) || pluginSkill(id);
     const offered = ids.filter(id => !hidden.includes(id));
-    const items: Suggestions['items'] = offered.filter(id => specialChip(id) || snapshot.skills.includes(id) || id === 'aif-chat' || id === reply.next).map(id => id === IMPROVE_APPROVAL && proposal ? {
+    const items: Suggestions['items'] = offered.filter(id => specialChip(id) || skillInstalled(id) || id === reply.next).map(id => id === IMPROVE_APPROVAL && proposal ? {
       id, label: 'Применить всё', kind: 'improve-approval' as const, command: proposal.command,
       available: !reply.error && !reply.gate?.blocking && snapshot.skills.includes('aif-improve')
         && snapshot.pendingQuestions === 0 && snapshot.pendingConfirmation === true && !!approvalThread
@@ -444,8 +447,8 @@ export default async function plugin(bb: BbPluginApi) {
       reason: 'Пересобрать контекст только выбранного change; команда объявлена установленным расширением',
       probability: null,
     } : ({ id, command: withTopic(`${prefix}${reply.commands.get(id) ?? id}`, id, reply.next === id ? reply.gate?.suggested_next?.reason : null),
-      available: !reply.error && !blockedByGate(id, reply.gate, reply.warning) && !(id === 'aif-implement' && contextBlock) && !(id === 'aif-commit' && commitNavigationDeferred(snapshot)) && !unchangedCheck(snapshot, id, reply.commands.get(id)) && snapshot.profile !== 'invalid' && (snapshot.skills.includes(id) || id === 'aif-chat'),
-      reason: reply.error ?? (id === 'aif-implement' && contextBlock ? contextBlock : blockedByGate(id, reply.gate, reply.warning) ? blockedReason! : id === 'aif-commit' && commitNavigationDeferred(snapshot) ? 'Коммиты привязаны к плану; продолжите aif-implement до разрешённого commit-boundary.' : unchangedCheck(snapshot, id, reply.commands.get(id)) ? unchangedReason : snapshot.profile === 'invalid' ? 'Проверьте конфигурацию проекта.' : !(snapshot.skills.includes(id) || id === 'aif-chat') ? `Команда ${id} не установлена для ${snapshot.runtime}. Добавьте этот skill в установку AI Factory проекта.` : reply.next === id ? reply.gate?.suggested_next?.reason ?? 'Следующий шаг из gate' : 'Команда из последнего ответа агента'),
+      available: !reply.error && !blockedByGate(id, reply.gate, reply.warning) && !(id === 'aif-implement' && contextBlock) && !(id === 'aif-commit' && commitNavigationDeferred(snapshot)) && !unchangedCheck(snapshot, id, reply.commands.get(id)) && (snapshot.profile !== 'invalid' || pluginSkill(id)) && skillInstalled(id),
+      reason: reply.error ?? (id === 'aif-implement' && contextBlock ? contextBlock : blockedByGate(id, reply.gate, reply.warning) ? blockedReason! : id === 'aif-commit' && commitNavigationDeferred(snapshot) ? 'Коммиты привязаны к плану; продолжите aif-implement до разрешённого commit-boundary.' : unchangedCheck(snapshot, id, reply.commands.get(id)) ? unchangedReason : snapshot.profile === 'invalid' && !pluginSkill(id) ? 'Проверьте конфигурацию проекта.' : !skillInstalled(id) ? `Команда ${id} не установлена для ${snapshot.runtime}. Добавьте этот skill в установку AI Factory проекта.` : reply.next === id ? reply.gate?.suggested_next?.reason ?? 'Следующий шаг из gate' : 'Команда из последнего ответа агента'),
       probability: null,
     }));
     if (offered.length > items.length) bb.log.debug(`aif-chat: suggestions threadId=${threadId} shown=${items.length} hiddenUnknown=${offered.length - items.length}`);
@@ -987,7 +990,7 @@ export default async function plugin(bb: BbPluginApi) {
     let modeOn = false;
     try { modeOn = getMode(ctx.project.id); } catch (error) { bb.log.warn(`aif-chat: aif-mode read failed projectId=${ctx.project.id}: ${error instanceof Error ? error.message : String(error)}`); }
     const mode = shouldContribute({ enabled, modeOn, parentThreadId: ctx.thread.parentThreadId }) ? '\n\n' + aifModeInstructions() : '';
-    return { tools: ["aif_chat_status"], skills: ["aif-chat"], instructions: 'For AI Factory/AIFHub work, use aif_chat_status at workflow boundaries or explicit status requests and emit its previewDirective exactly once on its own line. The directive renders real workflow buttons and read-only plan/check progress. Do not wrap it in code. Report the phase actually reached, preserve exact owner handoffs and gate blocks. Never add a directive after a required final aif-gate-result or proposed_plan, or inside an exact-handoff-only response. Native Plan responses must end with the plan block; the persistent panel discovers the proposal without extra markup. Do not call for unrelated tasks or repeat unchanged cards. When asking the user to confirm scope or answer a clarification, wait for their answer without adding a workflow card. If awaitingUser is true or previewDirective is empty, emit no directive. Existing authorization persists; do not invent approval questions. Buttons are optional navigation, not required questions. No workflow action runs until the user clicks or has already authorized it. Plugin phase is a declaration; file reports are not proof of current PASS.' + mode };
+    return { tools: ["aif_chat_status"], skills: [...PLUGIN_SKILLS], instructions: 'For AI Factory/AIFHub work, use aif_chat_status at workflow boundaries or explicit status requests and emit its previewDirective exactly once on its own line. The directive renders real workflow buttons and read-only plan/check progress. Do not wrap it in code. Report the phase actually reached, preserve exact owner handoffs and gate blocks. Never add a directive after a required final aif-gate-result or proposed_plan, or inside an exact-handoff-only response. Native Plan responses must end with the plan block; the persistent panel discovers the proposal without extra markup. Do not call for unrelated tasks or repeat unchanged cards. When asking the user to confirm scope or answer a clarification, wait for their answer without adding a workflow card. If awaitingUser is true or previewDirective is empty, emit no directive. Existing authorization persists; do not invent approval questions. Buttons are optional navigation, not required questions. No workflow action runs until the user clicks or has already authorized it. Plugin phase is a declaration; file reports are not proof of current PASS.' + mode };
   });
   bb.ui.registerMentionProvider({
     id: AIF_MENTION.provider,
@@ -1002,18 +1005,78 @@ export default async function plugin(bb: BbPluginApi) {
       return { context: aifModeInstructions() };
     },
   });
+  // Parallel /aif-implement: the git and spawn steps run here and on the folder's machine, so no path or JSON ever
+  // passes through the coordinator's shell (PowerShell, quoting, `git status` output copied by hand).
+  async function parallelCommand(command: 'spawn-worker' | 'bring-back', threadId: string, target: string, options: Record<string, string>) {
+    const { thread, environment } = await context(threadId);
+    const root = environment.path!, hostId = environment.hostId;
+    const planName = (target.split(/[\\/]/).pop() ?? 'plan').replace(/\.md$/i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+/, '').slice(0, 60) || 'plan';
+    if (command === 'spawn-worker') {
+      // Models write `task-1`, `Task 1` or `#1`: keep only the number.
+      const task = options['--task']?.trim().replace(/^(?:task[\s#_-]?|#)(?=\d)/i, ''), brief = options['--brief'];
+      if (!target) throw new Error('Укажите план: --target <путь>.');
+      if (!/^\d{1,6}(?:\.\d{1,6}){0,5}$/.test(task ?? '')) throw new Error('Укажите номер задачи: --task <id> (например 3 или 1.2).');
+      if (!brief) throw new Error('Укажите файл задания: --brief <файл>.');
+      const state = await host.call('delegation', { root }, { hostId });
+      if (state.choice.mode !== 'bb') throw new Error('Делегирование кода выключено: выполняйте задачи сами.');
+      const choice = state.choice;
+      // The setting is read at each launch: a coordinator still following the parallel block after the owner turned it off must not spawn.
+      if (!choice.parallel) throw new Error('Параллельный режим выключен: перечитайте блок в .ai-factory/skill-context/aif-implement/SKILL.md и работайте одним исполнителем.');
+      // BB's own record, not a list kept here: every unarchived child this plugin spawned under the chat counts — renamed,
+      // restored from the archive or started by an older version — and a failed write can never lose a live worker.
+      const running = (await bb.sdk.threads.list({ parentThreadId: threadId, originPluginId: 'aif-chat', archived: false, includeHidden: true, limit: 200 }))
+        .filter(t => !t.archivedAt);
+      if (running.length >= choice.parallel) throw new Error(`Уже запущено исполнителей: ${running.length} из ${choice.parallel}. Дождитесь их, перенесите результат и архивируйте (bb thread archive <id>), затем запускайте следующих.`);
+      const { text } = await host.call('readBrief', { path: brief }, { hostId });
+      const { sha } = await host.call('headCommit', { root }, { hostId });
+      // A fresh suffix per launch: a retry never collides with a copy BB has not removed yet.
+      const name = `${planName}-${task}-${randomUUID().slice(0, 8)}`;
+      const prompt = `${text.trim()}\n\nYou work in your own copy of the project: the folder BB opened this thread in. Before any change run \`git rev-parse --show-toplevel\`; if it fails, \`cd\` into that folder first. The copy already holds the coordinator's uncommitted work from earlier tasks: \`git status\` shows it as changes. Keep it. Change files only: do not run git commands that change the index or the history (\`git add\`, \`rm\`, \`mv\`, \`stash\`, \`reset\`, \`checkout\`, \`restore\`, \`commit\`); the coordinator takes your changes from the files. If dependencies are missing, install them first. Do not commit.`;
+      const spawned = await bb.sdk.threads.spawn({
+        projectId: thread.projectId, origin: 'plugin', title: `AIF · ${planName} · ${task}`, prompt,
+        environment: { type: 'provider', environmentProviderId: WORKTREE_PROVIDER_ID, inputs: { basePath: root, name, ref: sha, seed: true }, machine: { type: 'existing', hostId } },
+        parentThreadId: threadId, lifecycleOwnerThreadId: threadId, parentNotifications: 'off',
+        providerId: choice.providerId, model: choice.model,
+        ...(choice.reasoning ? { reasoningLevel: choice.reasoning } : {}),
+        // The worker never inherits the coordinator's tier: the Code role's tier, or default.
+        serviceTier: choice.tier || 'default',
+        // Without a source BB drops the provider and model and starts the provider's default one.
+        executionInputSources: { providerId: 'explicit', model: 'explicit',
+          ...(choice.reasoning ? { reasoningLevel: 'explicit' as const } : {}), serviceTier: 'explicit' },
+      });
+      bb.log.info(`aif-chat: worker spawned threadId=${threadId} worker=${spawned.id} task=${task} sha=${sha.slice(0, 12)} running=${running.length + 1}/${choice.parallel}`);
+      const data = { id: spawned.id, task, name, sha };
+      return { ok: true, data, text: `Исполнитель задачи ${task}: ${spawned.id}` };
+    }
+    const workerId = options['--worker'];
+    if (!/^[\w-]{1,200}$/.test(workerId ?? '')) throw new Error('Укажите исполнителя: --worker <id треда>.');
+    const worker = await bb.sdk.threads.get({ threadId: workerId });
+    if (worker.parentThreadId !== threadId) throw new Error(`Тред ${workerId} не исполнитель этого чата.`);
+    if (!worker.environmentId) throw new Error(`У исполнителя ${workerId} нет рабочей среды.`);
+    const env = await bb.sdk.environments.get({ environmentId: worker.environmentId });
+    if (env.environmentProviderId !== WORKTREE_PROVIDER_ID || env.hostId !== hostId || !env.path) throw new Error(`Исполнитель ${workerId} работает не в копии AI Factory на этой машине.`);
+    const result = await host.call('bringBack', { root, copy: env.path }, { hostId });
+    bb.log.info(`aif-chat: bring-back threadId=${threadId} worker=${workerId} applied=${result.applied} files=${result.files.length}`);
+    const text = result.applied ? `Перенесено файлов: ${result.files.length}\n${result.files.join('\n')}`
+      : result.empty ? 'Исполнитель ничего не изменил.'
+      : result.partial ? `Запись прервалась, и эти файлы не удалось вернуть как было: ${result.files.join(', ')}\n${result.error}`
+      : `Патч не ложится, рабочая папка не изменена:\n${result.error}`;
+    return { ok: result.applied || !!result.empty, data: result, text };
+  }
   bb.cli.register({
     name: 'aif-chat', summary: 'AI Factory versions, live workflow card and read-only plan/check progress',
     commands: [...['status', 'show', 'save-plan', 'mark-verified', 'check-updates', 'reset', 'reset-dispatch'].map(name => ({ name, summary: name === 'show' ? 'Show a live chat card' : name, usage: `bb plugin run aif-chat ${name} [--thread <id>] [--target <path>] [--phase <phase>] [--json]` })),
-      { name: 'groups', summary: 'Parallel task groups of a plan', usage: 'bb plugin run aif-chat groups --target <path> [--max 1-4] [--json]' }],
+      { name: 'spawn-worker', summary: 'Start a parallel worker on its own copy of the project', usage: 'bb plugin run aif-chat spawn-worker --target <plan> --task <id> --brief <file> [--json]' },
+      { name: 'bring-back', summary: 'Apply a parallel worker\'s changes to this workspace', usage: 'bb plugin run aif-chat bring-back --worker <thread id> [--json]' },
+      { name: 'wait-worker', summary: 'Wait up to 90 s for a worker of this chat, with no gap between calls', usage: 'bb plugin run aif-chat wait-worker --worker <thread id> [--after <seq>] [--json]' }],
     async run(argv, ctx) {
       try {
         const [command = 'help', ...args] = argv;
-        if (command === 'help' || command === '--help') return { exitCode: 0, stdout: 'bb plugin run aif-chat status|show|save-plan|mark-verified|check-updates|reset|reset-dispatch|groups [--thread ID] [--target PATH] [--phase explore|plan|improve|implement|verify|fix|done] [--max 1-4] [--json]' };
+        if (command === 'help' || command === '--help') return { exitCode: 0, stdout: 'bb plugin run aif-chat status|show|save-plan|mark-verified|check-updates|reset|reset-dispatch|spawn-worker|bring-back|wait-worker [--thread ID] [--target PATH] [--phase explore|plan|improve|implement|verify|fix|done] [--json]' };
         const options: Record<string, string> = {}; let json = false;
         for (let i = 0; i < args.length; i++) {
           if (args[i] === '--json') { json = true; continue; }
-          if (!['--thread', '--target', '--phase', '--max'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Неизвестный аргумент или отсутствует значение.');
+          if (!['--thread', '--target', '--phase', '--max', '--group', '--token', '--task', '--brief', '--worker', '--after'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Неизвестный аргумент или отсутствует значение.');
           if (args[i] in options) throw new Error('Повторяющийся аргумент.');
           const name = args[i]; options[name] = args[++i];
         }
@@ -1054,22 +1117,27 @@ export default async function plugin(bb: BbPluginApi) {
           if (command === 'reset') await bb.storage.kv.delete(`chat-plan:${input.threadId}`);
           cache.invalidate(key => !!watchers.get(key)?.has(input.threadId)); return { exitCode: 0, stdout: 'Состояние интерфейса сброшено; проект не изменён.' };
         }
-        if (command === 'groups') {
-          if (!input.target) throw new Error('Укажите план: --target <путь>.');
-          const { environment } = await context(input.threadId);
-          const plan = await host.call('planText', { root: environment.path!, target: input.target }, { hostId: environment.hostId });
-          const max = Number(options['--max'] ?? 3);
-          const result = parallelGroups(plan.text, max);
-          if ('error' in result) {
-            bb.log.warn(`aif-chat: parallel groups target=${plan.path} error=${result.error}`);
-            if (json) return { exitCode: 0, stdout: JSON.stringify({ target: plan.path, error: result.error }) };
-            return { exitCode: 1, stderr: result.error };
-          }
-          bb.log.info(`aif-chat: parallel groups target=${plan.path} groups=${result.groups.length}`);
-          if (json) return { exitCode: 0, stdout: JSON.stringify({ target: plan.path, max, ...result }) };
-          const lines = result.groups.map((group, i) => `Группа ${i + 1}: задачи ${group.join(', ')}`);
-          if (result.coordinatorOnly.length) lines.push(`Только координатор: задачи ${result.coordinatorOnly.join(', ')}`);
-          return { exitCode: 0, stdout: lines.join('\n') };
+        // `groups` and `checkpoint` were removed; a coordinator still holding the old managed block falls back to the one-worker flow.
+        if (command === 'groups' || command === 'checkpoint') {
+          const error = `Команда ${command} удалена: перечитайте блок параллельного режима в .ai-factory/skill-context/aif-implement/SKILL.md (откройте вкладку AI Factory), а до этого работайте одним исполнителем.`;
+          return json ? { exitCode: 0, stdout: JSON.stringify({ error }) } : { exitCode: 1, stderr: error };
+        }
+        if (command === 'wait-worker') {
+          // Any child of this chat: a parallel worker, the one-worker flow's thread or a research worker.
+          const workerId = options['--worker'], after = options['--after'] ?? '0';
+          if (!/^[\w-]{1,200}$/.test(workerId ?? '')) throw new Error('Укажите исполнителя: --worker <id треда>.');
+          if (!/^\d{1,15}$/.test(after)) throw new Error('--after — номер события из прошлого ответа (seq).');
+          const worker = await bb.sdk.threads.get({ threadId: workerId });
+          if (worker.parentThreadId !== input.threadId) throw new Error(`Тред ${workerId} не исполнитель этого чата.`);
+          const result = await waitWorker(bb.sdk.threads, workerId, Number(after));
+          const text = `${result.state} seq=${result.seq} quietForMs=${result.quietForMs}\n${result.output ?? ''}`;
+          return { exitCode: 0, stdout: json ? JSON.stringify(result) : text };
+        }
+        if (command === 'spawn-worker' || command === 'bring-back') {
+          // Launches of one chat run one by one, so two at once cannot both pass the worker limit.
+          const run = () => parallelCommand(command, input.threadId, input.target, options);
+          const result = command === 'spawn-worker' ? await serial(`spawn-worker:${input.threadId}`, run) : await run();
+          return { exitCode: result.ok ? 0 : 1, stdout: json ? JSON.stringify(result.data) : result.text };
         }
         if (!['status', 'show', 'check-updates'].includes(command)) throw new Error('Неизвестная команда.');
         if (command === 'show') {

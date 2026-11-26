@@ -5,7 +5,7 @@ export const WORKTREE_PROVIDER_ID = 'aif-chat-worktree';
 
 /**
  * `basePath` is the coordinator's folder: a project root, a section with its own repository, or a subfolder of a
- * larger repository. `name` is `<plan>-<taskId>`, `ref` the checkpoint commit the copy starts from (default HEAD).
+ * larger repository. `name` is `<plan>-<taskId>`, `ref` the commit the copy starts from (default HEAD); `seed` adds the coordinator's uncommitted work on top.
  */
 export const worktreeInputs = z.object({
   // Absolute on the folder's machine, which may be Windows while BB runs elsewhere: `/x`, `C:\x`, `C:/x`, `\\server\share`.
@@ -13,6 +13,8 @@ export const worktreeInputs = z.object({
   basePath: z.string().max(4096).regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\])/, 'An absolute path is required'),
   name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
   ref: z.string().max(200).regex(/^[^-]/, 'A ref may not start with "-"').optional(),
+  // Copy the coordinator's uncommitted work into the copy as well (parallel workers): no checkpoint commit needed.
+  seed: z.boolean().optional(),
 }).strict();
 const resourceSchema = z.object({ basePath: z.string(), root: z.string() });
 

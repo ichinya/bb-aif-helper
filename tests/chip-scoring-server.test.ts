@@ -8,7 +8,7 @@ import { DECISIONS_URL } from '../chip-scoring.ts';
 async function setup(options: { variables?: string[]; catalogError?: boolean; settings?: Record<string, string | number | boolean> } = {}) {
   const calls: any[] = [];
   const h = createFakePluginHost({
-    pluginId: 'aif-chat', agentSkillIds: ['aif-chat'], experimental_hostEntry: true,
+    pluginId: 'aif-chat', agentSkillIds: ['aif-chat', 'aif-scout'], experimental_hostEntry: true,
     settings: options.settings,
     sdk: {
       plugins: {
@@ -90,7 +90,7 @@ test('setChipScoring persists source and catalogName and keeps other fields', as
 async function setupScoring(options: { reply?: string; settings?: Record<string, string | number | boolean>; variables?: string[]; catalogError?: boolean } = {}) {
   const rpcCalls: any[] = [];
   const h = createFakePluginHost({
-    pluginId: 'aif-chat', agentSkillIds: ['aif-chat'], experimental_hostEntry: true,
+    pluginId: 'aif-chat', agentSkillIds: ['aif-chat', 'aif-scout'], experimental_hostEntry: true,
     settings: options.settings,
     sdk: {
       threads: {

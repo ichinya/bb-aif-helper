@@ -12,7 +12,7 @@ async function setup() {
   let output: string | null = null;
   let eventRows: any[] = [];
   const thread = makeThreadResponse({ id: 'thr_test', projectId: 'proj_test', environmentId: 'env_test', status: 'idle', runtime: { displayStatus: 'idle' } });
-  const h = createFakePluginHost({ pluginId: 'aif-chat', agentSkillIds: ['aif-chat'], experimental_hostEntry: true,
+  const h = createFakePluginHost({ pluginId: 'aif-chat', agentSkillIds: ['aif-chat', 'aif-scout'], experimental_hostEntry: true,
     sdk: {
       threads: { get: async () => thread,
         events: { list: async (args: any) => {
@@ -39,13 +39,20 @@ test('mode instructions reach only top-level threads of an enabled project', asy
   try {
     const provider = h.harness.inspection.registrations.agentConfigurationProvider!;
     assert(provider, 'configure provider registered');
+    assert.deepEqual(provider(agentContext()).skills, ['aif-chat', 'aif-scout']);
     assert(!provider(agentContext()).instructions?.includes('## AI Factory mode'));
     await h.harness.behavior.callRpc('setAifMode', { projectId: 'proj_test', on: true });
-    assert(provider(agentContext()).instructions?.includes('## AI Factory mode'));
+    const enabled = provider(agentContext());
+    assert.deepEqual(enabled.skills, ['aif-chat', 'aif-scout']);
+    assert(enabled.instructions?.includes('## AI Factory mode'));
+    assert(enabled.instructions?.includes('/aif-scout'));
+    assert(enabled.instructions?.includes('offer `/aif-scout "<topic>"` as a next step'));
+    assert(!provider(agentContext('thr_parent')).instructions?.includes('/aif-scout "<topic>"'));
     assert(!provider(agentContext('thr_parent')).instructions?.includes('## AI Factory mode'));
     assert(!provider(agentContext(null, 'proj_other')).instructions?.includes('## AI Factory mode'));
     await h.harness.behavior.setSettings({ enabled: false });
     assert.equal(provider(agentContext()).instructions, '');
+    assert.deepEqual(provider(agentContext()).skills, []);
   } finally { await h.harness.lifecycle.dispose(); }
 });
 

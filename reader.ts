@@ -66,7 +66,8 @@ export function taskList(text: string): NonNullable<Snapshot['target']>['tasks']
       }
     }
     if (sectionLevel && new RegExp(`^#{1,${sectionLevel}}\\s`).test(raw)) break;
-    const m = raw.match(/^( *)[-*+] \[([ xX])\]\s+(.+)$/);
+    // `[~]` (in progress) and `[!]` (failed) are implement-coordinator's marks: still open tasks.
+    const m = raw.match(/^( *)[-*+] \[([ xX~!])\]\s+(.+)$/);
     if (m) {
       if (m[1].length >= 4 && !listActive) continue;
       listActive = true;
@@ -153,14 +154,6 @@ class Reader {
       return items.filter(e => !e.isSymbolicLink()).map(e => ({ name: e.name, directory: e.isDirectory() })).sort((a, b) => a.name.localeCompare(b.name));
     } catch (e: any) { if (e.code === 'ENOENT') return []; throw e; }
   }
-}
-
-export async function readPlanText(root: string, target: string): Promise<{ path: string; text: string }> {
-  const rel = safeRelative(target.replace(/^@/, ''));
-  if (!rel.endsWith('.md')) throw new Error('План должен быть файлом .md.');
-  const text = await new Reader(root).read(rel);
-  if (text === null) throw new Error(`План не найден: ${rel}`);
-  return { path: rel, text };
 }
 
 async function git(root: string, args: string[], signal?: AbortSignal, trim = true): Promise<string | null> {

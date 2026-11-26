@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CONTEXT_PATH, RESEARCH_PATH, mergeContextBlock, parseSpec, readDelegation, writeDelegation } from '../delegation.ts';
+import { CONTEXT_PATH, RESEARCH_PATH, mergeContextBlock, parseSpec, readDelegation, researchBlock, writeDelegation } from '../delegation.ts';
 
 const LEGACY_RUNNER = '.ai-factory/bin/bb-aif-run.mjs';
 
@@ -75,10 +75,16 @@ test('context block spawns workers with native bb thread commands and quoted fla
   assert.match(text, /AIF · /);
   assert.ok(!text.includes('node ')); assert.ok(!text.includes('aif_delegate_task'));
 
+  // Without the flag BB starts the worker on the coordinator's tier: default is always sent explicitly.
   await writeDelegation(root, { mode: 'bb', providerId: 'codex', model: 'm', tier: 'default' });
-  assert.ok(!(await managedBlock(root)).includes('--service-tier'));
+  assert.ok((await managedBlock(root)).includes("--model 'm' --service-tier 'default'"));
   await writeDelegation(root, { mode: 'bb', providerId: 'codex', model: 'm' });
-  assert.ok(!(await managedBlock(root)).includes('--service-tier'));
+  assert.ok((await managedBlock(root)).includes("--model 'm' --service-tier 'default'"));
+});
+
+test('research workers get the default tier explicitly too, never the coordinator\'s', () => {
+  const text = researchBlock({ research: { mode: 'bb', providerId: 'acp-antigravity', model: 'gemini-4-carbon' }, research2: { mode: 'self' }, research3: { mode: 'self' } })!;
+  assert.ok(text.includes("--provider 'acp-antigravity' --model 'gemini-4-carbon' --service-tier 'default'"));
 });
 
 test('a model with shell metacharacters reaches the block only single-quoted', async () => {

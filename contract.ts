@@ -23,11 +23,11 @@ export const chipScoringViewSchema = z.object({
   lastError: z.string().nullable(), lastScoredAt: z.number().nullable(),
 });
 export type ChipScoringView = z.infer<typeof chipScoringViewSchema>;
+const rootInput = z.object({ root: z.string().min(1).max(4096) }).strict();
 export const hostContract = defineRpcContract({
   collect: { input: hostInputSchema, output: snapshotSchema, experimental_retryable: true },
   delegation: { input: z.object({ root: z.string().min(1).max(4096) }).strict(), output: delegationStateSchema, experimental_retryable: true },
   setDelegation: { input: z.object({ root: z.string().min(1).max(4096), choice: delegationChoiceSchema, role: delegationRoleSchema.optional() }).strict(), output: delegationStateSchema },
-  planText: { input: z.object({ root: z.string().min(1).max(4096), target: z.string().min(1).max(1000) }).strict(), output: z.object({ path: z.string(), text: z.string() }), experimental_retryable: true },
   watch: { input: z.object({ root: z.string().min(1).max(4096) }).strict(), output: z.object({ ok: z.literal(true) }) },
   unwatch: { input: z.object({ root: z.string().min(1).max(4096) }).strict(), output: z.object({ ok: z.literal(true) }) },
   savePlan: { input: z.object({ root: z.string().min(1).max(4096), threadId: z.string().regex(/^[\w-]{1,200}$/),
@@ -35,10 +35,14 @@ export const hostContract = defineRpcContract({
     output: z.object({ path: z.string() }), experimental_retryable: true },
   markPlanVerified: { input: z.object({ root: z.string().min(1).max(4096), target: z.string().min(1).max(1000), expectedHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
     output: z.object({ path: z.string(), verified: z.literal(true) }), experimental_retryable: false },
-  createWorktree: { input: z.object({ basePath: z.string().min(1).max(4096), name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), ref: z.string().max(200).optional() }).strict(),
+  createWorktree: { input: z.object({ basePath: z.string().min(1).max(4096), name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), ref: z.string().max(200).optional(), seed: z.boolean().optional() }).strict(),
     output: z.object({ root: z.string(), path: z.string(), sha: z.string() }), experimental_retryable: false },
   removeWorktree: { input: z.object({ basePath: z.string().min(1).max(4096), root: z.string().min(1).max(4096) }).strict(),
     output: z.object({ removed: z.literal(true) }), experimental_retryable: true },
+  headCommit: { input: rootInput, output: z.object({ sha: z.string() }), experimental_retryable: true },
+  bringBack: { input: z.object({ root: z.string().min(1).max(4096), copy: z.string().min(1).max(4096) }).strict(),
+    output: z.object({ applied: z.boolean(), empty: z.boolean().optional(), partial: z.boolean().optional(), files: z.array(z.string()), error: z.string().optional() }), experimental_retryable: false },
+  readBrief: { input: z.object({ path: z.string().min(1).max(4096) }).strict(), output: z.object({ text: z.string() }), experimental_retryable: true },
 });
 const dispatchResult = z.object({ sent: z.boolean(), message: z.string(), stale: z.literal(true).optional() });
 

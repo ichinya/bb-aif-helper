@@ -6,6 +6,7 @@
 - Run rules, security, review, QA, quality and CI actions beside their check rows. Optional navigation preserves project-required gates.
 - Launch commands suggested in the last agent reply. Both `$aif…` and `/aif…` are recognized, the fixed `aif-mode sync` subcommand is retained, and each suggestion can be dismissed independently.
 - Inspect CLI, project, Git and extension versions. Matching versions move update buttons into the version details; version probes use a daily cache.
+- Run DrMax's search layer (Reddit Mapper Total 2.2.0 and the Cocoon Engine X4 search guide v7, unchanged) with `/aif-scout` as parallel web scouts on your configured research models, saving their findings and report under `.ai-factory/scout/<slug>-<timestamp>/`.
 
 ## How it works
 

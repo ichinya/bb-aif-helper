@@ -1,0 +1,2 @@
+# DrMax originals are byte copies with published SHA-256: never convert line endings
+skills/aif-scout/references/*.md -text

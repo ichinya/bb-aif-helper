@@ -411,3 +411,8 @@ test('plan and QA directories from config.yaml may end with a slash', async () =
     assert(s.candidates.every(c => !c.path.includes('//')));
   } finally { await f.cleanup(); }
 });
+
+test('taskList keeps implement-coordinator marks [~] and [!] as open tasks', () => {
+  const tasks = taskList('## Tasks\n<!-- parallel: tasks 1, 2 -->\n- [~] Task 1: A <!-- in-progress -->\n- [!] Task 2: B <!-- failed: tests -->\n- [x] Task 3: C\n');
+  assert.deepEqual(tasks.map(t => [t.id, t.done]), [['1', false], ['2', false], ['3', true]]);
+});

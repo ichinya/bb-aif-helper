@@ -4,7 +4,7 @@ import { parseReplyGate } from './gate.ts';
 import { briefCommands } from './session-brief.ts';
 import { gateEvidenceCommands } from './gate-evidence-command.ts';
 import { confirmationProse } from './confirmation.ts';
-import type { Action, Suggestions } from './model.ts';
+import { PLUGIN_SKILLS, type Action, type Suggestions } from './model.ts';
 
 function argumentsAfter(tail: string, code: boolean): string | null {
   const tokens: string[] = [];
@@ -118,7 +118,7 @@ export function analyzeReply(text: string) {
 // Chips write into the composer draft: bare commands that need the user's
 // topic wait for text; a command that already carries arguments submits an
 // empty draft right away and only edits a non-empty one.
-export const TOPIC_COMMANDS = new Set(['aif-explore', 'aif-plan', 'aif-fix']);
+export const TOPIC_COMMANDS = new Set(['aif-explore', 'aif-plan', 'aif-fix', 'aif-scout']);
 
 /** A bare topic command takes the gate's reason as its topic, so its chip can send at once. */
 export function withTopic(command: string, id: string, topic: string | null | undefined): string {
@@ -135,6 +135,13 @@ const stripRanges = (text: string, ranges: readonly { from: number; to: number }
 
 const isModePill = (m: { kind?: string; provider?: string; id?: string }) =>
   m.kind === 'plugin' && m.provider === 'aif-mode' && m.id === 'aif-mode';
+
+/** True when the draft text, ignoring the AI Factory pill, starts with a `/aif-…` or `$aif-…` command. */
+export function isCommandDraft(draft: { text: string; mentions: readonly { from: number; to: number; kind?: string; provider?: string; id?: string }[] }): boolean {
+  const pills = draft.mentions.filter(isModePill).sort((a, b) => a.from - b.from);
+  // Only an AI Factory command takes the rest of the draft as its arguments; `/tmp contains …` and `$20` are plain text.
+  return /^[/$]aif[\w-]*(\s|$)/i.test(stripRanges(draft.text, pills).trimStart());
+}
 
 export function chipDraft<M extends { from: number; to: number; kind?: string; provider?: string; id?: string }>(
   draft: { text: string; mentions: readonly M[] },
@@ -204,7 +211,7 @@ export function nextStepItems(actions: readonly Action[], o: { skills: readonly 
   return actions.filter(a => a.group === 'next' && a.available).flatMap(a => {
     const body = a.command.replace(/^[/$]/, '');
     const id = body.split(/\s/, 1)[0];
-    if (seen.has(id) || !(o.skills.includes(id) || id === 'aif-chat')) return [];
+    if (seen.has(id) || !(o.skills.includes(id) || (PLUGIN_SKILLS as readonly string[]).includes(id))) return [];
     seen.add(id);
     return [{ id, command: `${o.prefix}${body}`, available: true, reason: 'Следующий шаг', probability: null }];
   }).filter(item => !o.hidden.includes(item.id)).slice(0, 3);
