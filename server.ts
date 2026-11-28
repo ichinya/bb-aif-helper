@@ -1,7 +1,7 @@
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { hostContract, hostSignals, rpcContract, type ChipScoringView, type DelegationView } from './contract.ts';
+import { hostContract, hostSignals, rpcContract, type ChipScoringInput, type ChipScoringView, type DelegationView } from './contract.ts';
 import { DELEGATION_ROLES, delegationDefaultsSchema, modelSpec } from './delegation.ts';
 import { childModel, type ChildModel } from './child-model.ts';
 import type { DelegationChoice, DelegationDefaults, DelegationRole, DelegationState } from './delegation.ts';
@@ -58,6 +58,7 @@ export default async function plugin(bb: BbPluginApi) {
     upstreamRepo: { type: 'string', label: 'GitHub upstream AI Factory', default: 'lee-to/ai-factory', experimental_schema: z.string().regex(/^[\w.-]+\/[\w.-]+$/) },
     upstreamRef: { type: 'string', label: 'Upstream ref (пусто — последний стабильный release)', default: '', experimental_schema: z.string().max(200) },
     decisionsKey: { type: 'string', label: 'Ключ Gemini Decisions (ручной ввод)', secret: true, default: '' },
+    systemOneCredential: { type: 'string', label: 'Подключение System One (из раздела «Оценка кнопок»)', secret: true, default: '' },
   });
   const host = bb.hosts.experimental_client({ contract: hostContract, experimental_signals: hostSignals });
   registerWorktreeProvider(bb, host);
@@ -600,19 +601,42 @@ export default async function plugin(bb: BbPluginApi) {
   }
   async function chipScoringView(): Promise<ChipScoringView> {
     const [state, catalog, config] = await Promise.all([scoringState(), catalogSecrets(), settings.get()]);
-    return { ...state, catalogAvailable: catalog.available, catalogNames: catalog.names, manualKeySet: config.decisionsKey !== '' };
+    const { revision, ...view } = state;
+    const manualKeySet = state.connection ? !!systemOneKey(config.systemOneCredential, state.connection.endpoint) : !!config.decisionsKey;
+    return { ...view, catalogAvailable: catalog.available, catalogNames: catalog.names, manualKeySet };
   }
-  async function setChipScoring(input: { enabled?: boolean; source?: 'catalog' | 'manual'; catalogName?: string | null; manualKey?: string | null }) {
+  function systemOneKey(credential: string, endpoint: string): string | null {
+    if (!credential) return null;
+    try {
+      const stored = JSON.parse(credential);
+      return stored?.endpoint === endpoint && typeof stored.key === 'string' ? stored.key : null;
+    } catch { return null; }
+  }
+  async function setChipScoring(input: ChipScoringInput) {
     const state = await scoringState();
-    const next: ChipScoringState = { ...state, enabled: input.enabled ?? state.enabled, source: input.source ?? state.source,
+    const connection = input.connection === undefined ? state.connection : input.connection;
+    const next: ChipScoringState = { ...state, connection, revision: randomUUID(), lastError: null, lastScoredAt: null,
+      enabled: input.enabled ?? state.enabled, source: input.source ?? state.source,
       catalogName: input.catalogName === undefined ? state.catalogName : input.catalogName };
+    if (input.customKey && !input.connection) throw new Error('Укажите адрес для ключа System One.');
+    if (input.connection && !input.customKey && !systemOneKey((await settings.get()).systemOneCredential, input.connection.endpoint)) {
+      throw new Error('Введите ключ API для этого адреса.');
+    }
+    if (input.customKey && input.connection) {
+      await settings.experimental_set({ systemOneCredential: JSON.stringify({ endpoint: input.connection.endpoint, key: input.customKey }) });
+    } else if (input.connection === null) {
+      await settings.experimental_set({ systemOneCredential: null });
+    }
     if (input.manualKey !== undefined) await settings.experimental_set({ decisionsKey: input.manualKey });
     await bb.storage.kv.set(CHIP_SCORING_KV, next);
     bb.log.info(`aif-chat: chip scoring settings enabled=${next.enabled} source=${next.source}`);
     return chipScoringView();
   }
-  async function resolveDecisionsKey(): Promise<{ key: string } | { error: string }> {
-    const state = await scoringState();
+  async function resolveDecisionsKey(state: ChipScoringState): Promise<{ key: string } | { error: string }> {
+    if (state.connection) {
+      const key = systemOneKey((await settings.get()).systemOneCredential, state.connection.endpoint);
+      return key ? { key } : { error: 'Введите ключ API для этого адреса.' };
+    }
     if (state.source === 'manual') {
       const key = (await settings.get()).decisionsKey;
       return key ? { key } : { error: 'Ключ не задан' };
@@ -629,32 +653,42 @@ export default async function plugin(bb: BbPluginApi) {
       return { error: 'ключ не найден в каталоге' };
     }
   }
-  async function scoreChips(threadId: string, key: string, reply: string, options: { id: string; command: string }[]) {
+  async function scoreChips(threadId: string, key: string, reply: string, options: { id: string; command: string }[], profile: ChipScoringState) {
     const started = Date.now();
     const fail = async (lastError: string, detail: string) => {
       rememberChipScore(key, {});
       bb.log.warn(`aif-chat: chip scoring failed threadId=${threadId}: ${detail}`);
       await serial(CHIP_SCORING_KV, async () => {
         const state = await scoringState();
+        if (state.revision !== profile.revision) return;
         await bb.storage.kv.set(CHIP_SCORING_KV, { ...state, lastError });
       });
       bb.rpc.experimental_invalidate([CHIP_SCORING_TAG]);
     };
-    const resolved = await resolveDecisionsKey();
+    const resolved = await resolveDecisionsKey(profile);
     if ('error' in resolved) return fail(resolved.error, resolved.error);
+    const connection = profile.connection;
+    const provider = connection ? 'System One' : 'Gemini';
     let probabilities: Record<string, number>;
     try {
-      const response = await fetch(DECISIONS_URL, { method: 'POST', headers: { 'x-goog-api-key': resolved.key, 'content-type': 'application/json' },
-        body: JSON.stringify(decisionsRequest(reply, options)), signal: AbortSignal.timeout(15000) });
-      if (!response.ok) return fail(`Gemini ответил HTTP ${response.status}`, `HTTP ${response.status}`);
+      const request = decisionsRequest(reply, options);
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (connection) headers.Authorization = `Bearer ${resolved.key}`;
+      else headers['x-goog-api-key'] = resolved.key;
+      const body = connection ? { model: connection.model, state: request.input, questions: request.questions } : request;
+      const response = await fetch(connection?.endpoint ?? DECISIONS_URL, { method: 'POST', headers, redirect: 'error',
+        body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
+      if (!response.ok) return fail(`${provider} ответил HTTP ${response.status}`, `HTTP ${response.status}`);
       const text = await response.text();
-      if (text.length > 1_048_576) return fail('Неверный ответ Gemini', 'response too large');
+      if (text.length > 1_048_576) return fail(`Неверный ответ ${provider}`, 'response too large');
       const parsed = decisionsResponseSchema.safeParse(JSON.parse(text));
-      if (!parsed.success) return fail('Неверный ответ Gemini', 'invalid response');
+      if (!parsed.success || (connection && !options.every(o => parsed.data.answers?.next?.probabilities?.[o.id] !== undefined))) {
+        return fail(`Неверный ответ ${provider}`, 'invalid response');
+      }
       probabilities = probabilitiesFor(parsed.data, options.map(o => o.id));
     } catch (error) {
       const name = error instanceof Error ? error.name : 'error';
-      const lastError = name === 'TimeoutError' || name === 'AbortError' ? 'Таймаут Gemini' : name === 'SyntaxError' ? 'Неверный ответ Gemini' : 'Gemini недоступен';
+      const lastError = name === 'TimeoutError' || name === 'AbortError' ? `Таймаут ${provider}` : name === 'SyntaxError' ? `Неверный ответ ${provider}` : `${provider} недоступен`;
       return fail(lastError, name);
     }
     rememberChipScore(key, probabilities);
@@ -663,14 +697,16 @@ export default async function plugin(bb: BbPluginApi) {
     bb.log.info(`aif-chat: chips scored threadId=${threadId} options=${options.length} top=${top} ms=${Date.now() - started}`);
     await serial(CHIP_SCORING_KV, async () => {
       const state = await scoringState();
+      if (state.revision !== profile.revision) return;
       await bb.storage.kv.set(CHIP_SCORING_KV, { ...state, lastError: null, lastScoredAt: Date.now() });
     });
   }
   async function chipScoringFor(threadId: string, sourceKey: string, reply: string, items: Suggestions['items']) {
     const options = items.filter(item => item.available);
     if (options.length < 2) return;
-    if (!(await scoringState()).enabled) return;
-    const key = scoringKey(sourceKey, options.map(item => item.id));
+    const profile = await scoringState();
+    if (!profile.enabled) return;
+    const key = scoringKey(profile.revision + ':' + sourceKey, options.map(item => item.id));
     const cached = chipScoreCache.get(key);
     if (cached) {
       for (const item of items) {
@@ -681,7 +717,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (chipScoreInflight.has(key)) return;
     chipScoreInflight.add(key);
-    void scoreChips(threadId, key, reply, options.map(item => ({ id: item.id, command: item.command })))
+    void scoreChips(threadId, key, reply, options.map(item => ({ id: item.id, command: item.command })), profile)
       .catch(() => {}).finally(() => { chipScoreInflight.delete(key); });
   }
   bb.rpc.register(rpcContract, {

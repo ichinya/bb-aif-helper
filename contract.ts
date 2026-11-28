@@ -1,6 +1,6 @@
 import type { defineRpcContract as DefineRpcContract } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { delegationChoiceSchema, delegationDefaultsSchema, delegationRoleSchema, delegationStateSchema } from './model.ts';
+import { delegationChoiceSchema, delegationDefaultsSchema, delegationRoleSchema, delegationStateSchema, systemOneConnectionSchema } from './model.ts';
 import { requestSchema, runSchema, snapshotSchema, hostInputSchema, suggestionRequestSchema, suggestionActionSchema, suggestionsSchema, gateResultSchema, cardVisibilitySchema } from './model.ts';
 import { SKIPPABLE_STEPS } from './readiness.ts';
 import { CHIP_SCORING_TAG, projectTag, threadTag } from './live-updates.ts';
@@ -18,11 +18,18 @@ export const delegationViewSchema = delegationStateSchema.extend({
 export const aifModeViewSchema = z.object({ projectId: z.string(), on: z.boolean(), configured: z.boolean().nullable() });
 export type DelegationView = z.infer<typeof delegationViewSchema>;
 export const chipScoringViewSchema = z.object({
+  connection: systemOneConnectionSchema.nullable(),
   enabled: z.boolean(), source: z.enum(['catalog', 'manual']), catalogName: z.string().nullable(),
   catalogAvailable: z.boolean(), catalogNames: z.array(z.string()), manualKeySet: z.boolean(),
   lastError: z.string().nullable(), lastScoredAt: z.number().nullable(),
 });
 export type ChipScoringView = z.infer<typeof chipScoringViewSchema>;
+const chipScoringInput = z.object({
+  enabled: z.boolean().optional(), source: z.enum(['catalog', 'manual']).optional(),
+  catalogName: z.string().max(200).nullable().optional(), manualKey: z.string().max(500).nullable().optional(),
+  connection: systemOneConnectionSchema.nullable().optional(), customKey: z.string().trim().min(1).max(4096).optional(),
+}).strict();
+export type ChipScoringInput = z.infer<typeof chipScoringInput>;
 export const hostContract = defineRpcContract({
   collect: { input: hostInputSchema, output: snapshotSchema, experimental_retryable: true },
   delegation: { input: z.object({ root: z.string().min(1).max(4096) }).strict(), output: delegationStateSchema, experimental_retryable: true },
@@ -65,8 +72,7 @@ export const rpcContract = defineRpcContract({
   setDelegationDefaults: { input: z.object({ threadId: z.string().min(1).max(200), action: z.enum(['from-project', 'apply', 'clear']) }).strict(), output: delegationViewSchema },
   chipScoring: { input: z.object({}).strict(), output: chipScoringViewSchema,
     tags: () => [CHIP_SCORING_TAG] },
-  setChipScoring: { input: z.object({ enabled: z.boolean().optional(), source: z.enum(['catalog', 'manual']).optional(),
-    catalogName: z.string().max(200).nullable().optional(), manualKey: z.string().max(500).nullable().optional() }).strict(), output: chipScoringViewSchema },
+  setChipScoring: { input: chipScoringInput, output: chipScoringViewSchema },
   setReadinessSkip: { input: z.object({ threadId: z.string().min(1).max(200), stepId: z.enum(SKIPPABLE_STEPS), skipped: z.boolean() }).strict(), output: z.object({ ok: z.literal(true) }) },
   runSuggestion: { input: suggestionActionSchema.extend({ fingerprint: z.string().length(64), requestId: z.string().uuid() }), output: dispatchResult.extend({
     command: z.string().optional(),

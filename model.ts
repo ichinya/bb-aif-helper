@@ -97,8 +97,19 @@ export const suggestionsSchema = z.object({
     label: z.string().optional(), kind: z.literal('improve-approval').optional() })),
 });
 export type Suggestions = z.infer<typeof suggestionsSchema>;
+export const systemOneConnectionSchema = z.object({
+  endpoint: z.string().trim().max(4096).refine(value => {
+    try {
+      const url = new URL(value);
+      return /^https?:\/\//i.test(value) && url.pathname !== '/' && !url.username && !url.password && !url.hash;
+    } catch { return false; }
+  }, 'Укажите полный HTTP(S) URL с путём к API.'),
+  model: z.string().trim().min(1).max(300),
+}).strict();
 export const chipScoringStateSchema = z.object({
   enabled: z.boolean().default(false),
+  connection: systemOneConnectionSchema.nullable().default(null),
+  revision: z.string().default(''),
   source: z.enum(['catalog', 'manual']).default('catalog'),
   catalogName: z.string().nullable().default(null),
   lastError: z.string().nullable().default(null),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { definePluginApp, useRpc, experimental_useRpcQuery, Markdown, experimental_FileLink as FileLink, useComposer, useBbNavigate, experimental_useAppPanel, experimental_ProviderModelPicker as ProviderModelPicker, type ExperimentalProviderModelPickerValue as PickerValue, type PluginMessageDirectiveProps, type ExperimentalThreadContextCardProps, type ExperimentalThreadTabProps, type ExperimentalCodeFenceRendererProps, type PluginComposerApi } from '@get-bb/plugin-sdk/app';
-import { rpcContract, type ChipScoringView, type DelegationView } from './contract.ts';
+import { rpcContract, type ChipScoringInput, type ChipScoringView, type DelegationView } from './contract.ts';
 import type { DelegationChoice, DelegationRole } from './delegation.ts';
 import { phaseSchema, cardIdSchema, RESEARCH_TASK_MAX_LENGTH, type Snapshot, type Phase, type Action, type ReadinessStep, type Suggestions } from './model.ts';
 import { readinessComplete, readinessCoreComplete, nextReadinessStep, readinessHelp, type SkippableStepId } from './readiness.ts';
@@ -740,22 +740,24 @@ function useChipScoringView(threadId: string) {
   return { view, setView, error, setError };
 }
 
-const CHIP_SCORING_HELP = 'Плагин отправляет последний ответ агента и список кнопок в Google Gemini Decisions и показывает вероятность каждой кнопки. Ответ может содержать пути и код проекта. Ключ API берётся из Env Catalog или вводится вручную; значение ключа во вкладку не попадает.';
+const CHIP_SCORING_HELP = 'При двух и более доступных кнопках плагин отправляет выбранному сервису последний ответ агента и варианты команд. Ответ может содержать пути и код проекта.';
+const scoringField = 'h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
-/** Plugin-wide Gemini Decisions scoring: toggle, key source and status. The key value never reaches the tab. */
+/** Plugin-wide scoring configuration. Saved credentials are never returned to the tab. */
 function ChipScoringSection({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const { view, setView, error, setError } = useChipScoringView(threadId);
   const [help, setHelp] = useState(false);
   const [saving, setSaving] = useState(false);
   const [manualKey, setManualKey] = useState('');
+  const [draft, setDraft] = useState<{ endpoint: string; model: string; key: string } | null>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   if (!view) return <Section label="Оценка кнопок" title="Оценка кнопок">
     {error ? <p className="m-0 text-xs text-muted-foreground">Настройка недоступна: {error}</p> : <div className="h-20 animate-pulse rounded-md bg-muted motion-reduce:animate-none" aria-hidden="true" />}
   </Section>;
   const source = view.catalogAvailable ? view.source : 'manual';
-  const save = async (input: { enabled?: boolean; source?: 'catalog' | 'manual'; catalogName?: string | null; manualKey?: string | null }) => {
+  const save = async (input: ChipScoringInput) => {
     if (saving) return false;
     setSaving(true); setError('');
     try {
@@ -772,15 +774,41 @@ function ChipScoringSection({ threadId }: { threadId: string }) {
       <div className="flex min-h-11 flex-col justify-center gap-1 py-2.5 first:pt-0">
         <div className="flex items-center gap-2">
           <span className="flex min-w-0 flex-1 flex-col">
-            <span className="text-sm font-medium">Gemini Decisions<HelpMark label="Что отправляется в Google" open={help} onToggle={() => setHelp(!help)} /></span>
+            <span className="text-sm font-medium">{view.connection ? 'System One' : 'Gemini Decisions'}<HelpMark label="Что отправляется для оценки" open={help} onToggle={() => setHelp(!help)} /></span>
             <span className="text-xs text-muted-foreground">Проценты вероятности на кнопках-подсказках</span>
           </span>
-          <Button type="button" size="sm" variant={view.enabled ? 'default' : 'outline'} aria-pressed={view.enabled} disabled={saving}
+          <Button type="button" size="sm" variant={view.enabled ? 'default' : 'outline'} aria-pressed={view.enabled} disabled={saving || !!draft}
             onClick={() => void save({ enabled: !view.enabled })}>{view.enabled ? 'Вкл' : 'Выкл'}</Button>
         </div>
         {help && <p className="m-0 text-xs text-muted-foreground">{CHIP_SCORING_HELP}</p>}
       </div>
-      {view.enabled && <>
+      <div className="flex flex-col items-start gap-2 py-2.5">
+        {view.connection && <div className="break-all text-xs text-muted-foreground">{view.connection.model}<br />{view.connection.endpoint}</div>}
+        {draft ? <form className="grid w-full gap-2 text-xs" onSubmit={async e => {
+          e.preventDefault();
+          const connection = { endpoint: draft.endpoint.trim(), model: draft.model.trim() };
+          if (await save({ connection, enabled: true, ...(draft.key.trim() ? { customKey: draft.key.trim() } : {}) })) setDraft(null);
+        }}>
+          <label>Полный URL System One<input type="url" required placeholder="https://example.org/v1/systemone" value={draft.endpoint}
+            className={scoringField} disabled={saving} onChange={e => setDraft({ ...draft, endpoint: e.target.value })} /></label>
+          <label>ID модели<input required value={draft.model} className={scoringField} disabled={saving} onChange={e => setDraft({ ...draft, model: e.target.value })} /></label>
+          <label>Ключ API System One<input type="password" autoComplete="off" value={draft.key} className={scoringField} disabled={saving}
+            placeholder={view.connection?.endpoint === draft.endpoint.trim() && view.manualKeySet ? 'Ключ сохранён' : ''}
+            required={view.connection?.endpoint !== draft.endpoint.trim() || !view.manualKeySet}
+            onChange={e => setDraft({ ...draft, key: e.target.value })} /></label>
+          <div className="flex flex-wrap gap-2">
+            <Button type="submit" size="sm" disabled={saving}>{view.enabled ? 'Сохранить подключение' : 'Сохранить и включить'}</Button>
+            <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => setDraft(null)}>Отмена</Button>
+          </div>
+        </form> : <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() =>
+            setDraft({ endpoint: view.connection?.endpoint ?? '', model: view.connection?.model ?? '', key: '' })}>
+            {view.connection ? 'Изменить подключение' : 'Свой API (System One)'}</Button>
+          {view.connection && <Button type="button" size="sm" variant="outline" disabled={saving}
+            onClick={() => void save({ connection: null, enabled: false })}>Отключить свой API</Button>}
+        </div>}
+      </div>
+      {view.enabled && !view.connection && !draft && <>
         {view.catalogAvailable && <div className="py-2.5">
           <div role="radiogroup" aria-label="Источник ключа" className="grid grid-cols-2 gap-0.5 rounded-lg bg-muted p-0.5">
             {(['catalog', 'manual'] as const).map(s => <button key={s} type="button" role="radio" aria-checked={source === s} disabled={saving}
@@ -802,16 +830,16 @@ function ChipScoringSection({ threadId }: { threadId: string }) {
               className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring" /></label>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" size="sm" disabled={saving || !manualKey.trim()}
-              onClick={async () => { if (await save({ manualKey })) setManualKey(''); }}>Сохранить</Button>
+              onClick={async () => { if (await save({ manualKey, ...(view.source !== source ? { source } : {}) })) setManualKey(''); }}>Сохранить</Button>
             {view.manualKeySet && <Button type="button" size="sm" variant="outline" disabled={saving}
               onClick={() => void save({ manualKey: null })}>Удалить ключ</Button>}
           </div>
         </div>}
-        {(source === 'manual' && view.manualKeySet) || typeof view.lastScoredAt === 'number' ? <div className="flex flex-col gap-1 py-2.5 text-xs text-muted-foreground">
-          {source === 'manual' && view.manualKeySet && <span>Ключ задан</span>}
-          {typeof view.lastScoredAt === 'number' && <span>Последняя оценка: {new Date(view.lastScoredAt).toLocaleTimeString('ru-RU')}</span>}
-        </div> : null}
       </>}
+      {view.enabled && !draft && <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+        {(view.connection || source === 'manual') && view.manualKeySet && <span>Ключ задан</span>}
+        {typeof view.lastScoredAt === 'number' && <span>Последняя оценка: {new Date(view.lastScoredAt).toLocaleTimeString('ru-RU')}</span>}
+      </div>}
     </div>
     {view.lastError && <Callout>{view.lastError}</Callout>}
     {error && <Callout tone="error" role="status">{error}</Callout>}

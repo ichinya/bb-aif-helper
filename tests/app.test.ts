@@ -1245,7 +1245,7 @@ test('auto-applied defaults appear as a status callout inside settings', async (
 });
 
 function scoringView(patch: Record<string, unknown> = {}) {
-  return { enabled: false, source: 'catalog', catalogName: null, catalogAvailable: true,
+  return { enabled: false, source: 'catalog', catalogName: null, catalogAvailable: true, connection: null,
     catalogNames: ['GEMINI_API_KEY_AISTUDIO'], manualKeySet: false, lastError: null, lastScoredAt: null, ...patch };
 }
 
@@ -1354,6 +1354,28 @@ test('«Оценка кнопок» toggles scoring, hides the catalog without e
     await slot.findByText('Gemini ответил HTTP 403');
     fireEvent.click(slot.getByRole('button', { name: 'Удалить ключ' }));
     await waitFor(() => assert.deepEqual(saved[2], { manualKey: null }));
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test('custom scoring can be configured from off with a full URL, model and secret in one save', async () => {
+  const tab = app.tabs.find(t => t.id === 'workflow')!;
+  const connection = { endpoint: 'https://gateway.example/v1/systemone', model: 'some/model:free' };
+  const saved: any[] = [];
+  const slot = renderSlot(tab as any, { threadId: 'thr_custom_score', environment: { id: 'env_score' } }, { rpc: {
+    status: () => data(), delegation: () => delegView(), chipScoring: () => scoringView(),
+    setChipScoring: (input: any) => { saved.push(input); return scoringView({ enabled: true, connection, manualKeySet: true }); },
+  } });
+  try {
+    fireEvent.click(await slot.findByRole('tab', { name: /Настройки/ }));
+    fireEvent.click(await slot.findByRole('button', { name: 'Свой API (System One)' }));
+    fireEvent.change(slot.getByLabelText('Полный URL System One'), { target: { value: connection.endpoint } });
+    fireEvent.change(slot.getByLabelText('ID модели'), { target: { value: connection.model } });
+    fireEvent.change(slot.getByLabelText('Ключ API System One'), { target: { value: 'test-key' } });
+    fireEvent.click(slot.getByRole('button', { name: 'Сохранить и включить' }));
+    await waitFor(() => assert.deepEqual(saved, [{ enabled: true, connection, customKey: 'test-key' }]));
+    fireEvent.click(await slot.findByRole('button', { name: 'Изменить подключение' }));
+    assert.equal((slot.getByLabelText('Полный URL System One') as HTMLInputElement).value, connection.endpoint);
+    assert.equal((slot.getByLabelText('Ключ API System One') as HTMLInputElement).value, '');
   } finally { slot.lifecycle.unmount(); }
 });
 

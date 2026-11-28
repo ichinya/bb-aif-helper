@@ -31,7 +31,7 @@ test('chipScoring returns defaults and reports the catalog as unavailable', asyn
   try {
     const view = await h.harness.behavior.callRpc('chipScoring', {}) as any;
     assert.deepEqual(view, { enabled: false, source: 'catalog', catalogName: null, catalogAvailable: false,
-      catalogNames: [], manualKeySet: false, lastError: null, lastScoredAt: null });
+      catalogNames: [], manualKeySet: false, connection: null, lastError: null, lastScoredAt: null });
     assert(h.harness.inspection.logEntries.some(e => e.level === 'warn' && e.message.includes('env-catalog unavailable')));
   } finally { await h.harness.lifecycle.dispose(); }
 });
@@ -170,6 +170,47 @@ test('chip scoring enabled: async fetch fills probabilities once per sourceKey',
     assert.equal(state.lastError, null);
     assert(state.lastScoredAt > 0);
     assert(h.harness.inspection.logEntries.every(e => !e.message.includes(key)));
+  } finally { fetch.restore(); await h.harness.lifecycle.dispose(); }
+});
+
+test('System One scores on the exact endpoint, isolates credentials and refreshes a changed model', async () => {
+  const { h, rpcCalls } = await setupScoring({ settings: { decisionsKey: 'google-only' } });
+  const endpoint = 'https://gateway.example/custom/v1/systemone';
+  const connection = { endpoint, model: 'openrouter/antdigital/lingdt-decision-fast-1.0:free' };
+  const customKey = 'system-one-test-key';
+  const fetch = stubFetch(() => Response.json({ answers: { next: { probabilities: { 'aif-explore': 0.3, 'aif-plan': 0.7 } } } }));
+  const rpc = h.harness.behavior;
+  const read = () => rpc.callRpc('suggestions', { threadId: 'thr_test' }) as Promise<any>;
+  try {
+    const view = await rpc.callRpc('setChipScoring', { enabled: true, connection, customKey }) as any;
+    assert.deepEqual(view.connection, connection);
+    assert(view.manualKeySet);
+    assert(!JSON.stringify(view).includes(customKey));
+    assert(!JSON.stringify(await h.bb.storage.kv.get('chip-scoring')).includes(customKey));
+    assert(await waitFor(async () => (await read()).items.some((i: any) => i.probability === 0.7)));
+    const { url, init } = fetch.calls[0];
+    assert.equal(url, endpoint);
+    assert.equal(init.method, 'POST');
+    assert.equal(init.redirect, 'error');
+    assert.equal(init.headers.Authorization, 'Bearer ' + customKey);
+    assert.equal(init.headers['x-goog-api-key'], undefined);
+    const body = JSON.parse(init.body);
+    assert.equal(body.model, connection.model);
+    assert.match(body.state, /tighten the gate/);
+    assert.equal(body.input, undefined);
+    assert.deepEqual(Object.keys(body.questions.next.criteria).sort(), ['aif-explore', 'aif-plan']);
+    assert(!rpcCalls.some(c => c.method === 'env_get_value'));
+    await assert.rejects(rpc.callRpc('setChipScoring', { connection: { ...connection, endpoint: endpoint + '/other' } }));
+    await rpc.callRpc('setChipScoring', { connection: { ...connection, model: 'other' } });
+    assert(await waitFor(async () => (await read()).items.some((i: any) => i.probability === 0.7)));
+    assert.equal(fetch.calls.length, 2);
+    assert.equal(JSON.parse(fetch.calls[1].init.body).model, 'other');
+    await rpc.callRpc('setChipScoring', { connection: null, source: 'manual' });
+    await read();
+    assert(await waitFor(() => fetch.calls.length === 3));
+    assert.equal(fetch.calls[2].url, DECISIONS_URL);
+    assert.equal(fetch.calls[2].init.headers['x-goog-api-key'], 'google-only');
+    assert(h.harness.inspection.logEntries.every(e => !e.message.includes(customKey)));
   } finally { fetch.restore(); await h.harness.lifecycle.dispose(); }
 });
 
