@@ -8,14 +8,14 @@ import type { DelegationChoice, DelegationDefaults, DelegationRole, DelegationSt
 import { requestSchema, phaseSchema, snapshotSchema, chipScoringStateSchema, type CardRequest, type ChipScoringState, type Snapshot, type Phase, type Suggestions } from './model.ts';
 import { actionPrompt, workflowActions, commitNavigationDeferred } from './workflow.ts';
 import { applyRan, applySkipped, RUN_CONFIRMED_STEPS } from './readiness.ts';
-import { analyzeReply, nextStepItems, withTopic, rulesSyncCommand } from './suggestions.ts';
+import { analyzeReply, contextCandidates, nextStepItems, withTopic, rulesSyncCommand } from './suggestions.ts';
 import { blockedByGate } from './gate.ts';
-import { attachChatChecks, readChatChecks, type ChatCheck } from './check-history.ts';
+import { attachChatChecks, readChatChecks, type ChatCheck, type HistoryRow } from './check-history.ts';
 import { lockUnchangedChecks, unchangedCheck, unchangedReason } from './check-actions.ts';
 import { SnapshotCache } from './snapshot-cache.ts';
 import { AIF_MENTION, aifMentionItems, aifModeInstructions, shouldContribute } from './aif-mode.ts';
 import { versionSampleFresh } from './versions.ts';
-import { DECISIONS_URL, decisionsRequest, decisionsResponseSchema, probabilitiesFor, scoringErrorMessage, scoringKey } from './chip-scoring.ts';
+import { DECISIONS_URL, chipContext, decisionsRequest, decisionsResponseSchema, probabilitiesFor, scoringErrorMessage, scoringKey } from './chip-scoring.ts';
 import { parallelGroups } from './parallel-plan.ts';
 import { CHIP_SCORING_TAG, projectTag, threadTag } from './live-updates.ts';
 import { isBasicPlanPath, nativePlanInput } from './basic-workflow.ts';
@@ -32,12 +32,6 @@ type DismissedSuggestions = { sourceKey: string; ids: string[] };
 const suggestionSource = (root: string, output: string | null, proposalSeq?: number) => createHash('sha256')
   .update(JSON.stringify(proposalSeq === undefined ? [root, output] : [root, output, proposalSeq])).digest('hex');
 const CHIP_SCORE_CACHE_LIMIT = 200;
-const chipScoreCache = new Map<string, Record<string, number>>();
-const chipScoreInflight = new Set<string>();
-const rememberChipScore = (key: string, value: Record<string, number>) => {
-  if (!chipScoreCache.has(key) && chipScoreCache.size >= CHIP_SCORE_CACHE_LIMIT) chipScoreCache.delete(chipScoreCache.keys().next().value!);
-  chipScoreCache.set(key, value);
-};
 const chatStorageKey = (threadId: string, environmentId: string, hostId: string, root: string) =>
   `chat-checks:${threadId}:${environmentId}:${createHash('sha256').update(JSON.stringify([hostId, root])).digest('hex')}`;
 const commandInput = (command: string, context: string) => [
@@ -212,7 +206,7 @@ export default async function plugin(bb: BbPluginApi) {
         { scope, reports: [...reports.filter(r => r.target !== report.target).slice(-79), report] });
     });
   }
-  async function status(input: CardRequest, checkUpdates = false, fresh = false): Promise<Snapshot> {
+  async function status(input: CardRequest, checkUpdates = false, fresh = false, history?: HistoryRow[]): Promise<Snapshot> {
     const config = await settings.get();
     if (!config.enabled) throw new Error('Карточки отключены в настройках плагина.');
     const { thread, environment } = await context(input.threadId);
@@ -272,12 +266,12 @@ export default async function plugin(bb: BbPluginApi) {
     // Release only our managed selection, never reinterpret it as a native plan.
     if (snapshot.configured && isBasicPlanPath(target)) {
       if (selection?.target === target) await bb.storage.kv.delete(`selection:${input.threadId}`);
-      return status({ ...input, target: '', phase: 'unknown' }, false, true);
+      return status({ ...input, target: '', phase: 'unknown' }, false, true, history);
     }
     if (snapshot.selectionReset && snapshot.profile !== 'invalid' && target) {
       await bb.storage.kv.set(`selection:${input.threadId}`, { environmentId: environment.id, target: '', phase, newTask: true } satisfies Selection);
       await bb.storage.kv.delete(`chat-plan:${input.threadId}`);
-      const recovered = await status({ ...input, target: '', newTask: true }, false, true);
+      const recovered = await status({ ...input, target: '', newTask: true }, false, true, history);
       recovered.selectionReset = true;
       recovered.diagnostics = [...new Set([...snapshot.diagnostics, ...recovered.diagnostics])];
       return recovered;
@@ -305,6 +299,7 @@ export default async function plugin(bb: BbPluginApi) {
     try {
       const rows = await bb.sdk.threads.events.list({ threadId: input.threadId,
         order: 'desc', limit: '100', types: ['item/completed', 'client/turn/requested'] });
+      history?.push(...rows);
       snapshot.pendingConfirmation = pendingConfirmation(rows);
       await contextReport(input.threadId, environment, snapshot, rows);
       if (snapshot.profile === 'aifhub-openspec' && snapshot.target?.kind === 'openspec') {
@@ -407,7 +402,8 @@ export default async function plugin(bb: BbPluginApi) {
       if (!getMode(projectId)) return { view: empty, ids, hidden: [] as string[], snapshot: null, proposal: null };
       return fallbackSuggestions(threadId, output, fresh);
     }
-    const snapshot = await status({ threadId, target: '', phase: 'unknown' }, false, fresh);
+    const history: HistoryRow[] = [];
+    const snapshot = await status({ threadId, target: '', phase: 'unknown' }, false, fresh, history);
     let proposal: ReturnType<typeof pendingImproveProposal> = null;
     if (applyQuestion && !reply.warning && snapshot.configured && snapshot.profile !== 'invalid') {
       try { proposal = pendingImproveProposal(await bb.sdk.threads.events.list({ threadId,
@@ -450,19 +446,20 @@ export default async function plugin(bb: BbPluginApi) {
       probability: null,
     }));
     if (offered.length > items.length) bb.log.debug(`aif-chat: suggestions threadId=${threadId} shown=${items.length} hiddenUnknown=${offered.length - items.length}`);
-    await chipScoringFor(threadId, sourceKey, reply.prose, items);
+    await chipScoringFor(threadId, sourceKey, reply.prose, items, snapshot, history, [...reply.commands.keys(), ...ids], hidden, reply);
     const view: Suggestions = { sourceKey, fingerprint: snapshot.fingerprint, threadState: snapshot.threadState, gate: reply.gate, gateError: reply.error, gateWarning: reply.warning, origin: 'reply', items };
-    return { view, ids, hidden, snapshot, proposal };
+    return { view, ids: items.map(item => item.id), hidden, snapshot, proposal };
   }
   async function fallbackSuggestions(threadId: string, output: string | null, fresh: boolean) {
-    const snapshot = await status({ threadId, target: '', phase: 'unknown' }, false, fresh);
+    const history: HistoryRow[] = [];
+    const snapshot = await status({ threadId, target: '', phase: 'unknown' }, false, fresh, history);
     const sourceKey = suggestionSource(snapshot.root, output);
     const dismissed = await bb.storage.kv.get<DismissedSuggestions>(`suggestions-dismissed:${threadId}`);
     const hidden = dismissed?.sourceKey === sourceKey ? dismissed.ids : [];
     const items = nextStepItems(snapshot.actions, { skills: snapshot.skills, invalid: snapshot.profile === 'invalid',
       prefix: ['codex', 'codex-app'].includes(snapshot.runtime) ? '$' : '/', hidden });
     bb.log.debug(`aif-chat: fallback suggestions threadId=${threadId} count=${items.length}`);
-    await chipScoringFor(threadId, sourceKey, output ?? '', items);
+    await chipScoringFor(threadId, sourceKey, output ?? '', items, snapshot, history, items.map(i => i.id), hidden);
     const view: Suggestions = { sourceKey, fingerprint: snapshot.fingerprint, threadState: snapshot.threadState, gate: null, gateError: null, origin: 'plan', items };
     return { view, ids: items.map(i => i.id), hidden, snapshot, proposal: null };
   }
@@ -582,6 +579,12 @@ export default async function plugin(bb: BbPluginApi) {
     const configured = threadId ? await status({ threadId, target: '', phase: 'unknown' }).then(s => s.configured).catch(() => null) : null;
     return { projectId, on, configured };
   }
+  const chipScoreCache = new Map<string, Record<string, number>>();
+  const chipScoreInflight = new Set<string>();
+  const rememberChipScore = (key: string, value: Record<string, number>) => {
+    if (!chipScoreCache.has(key) && chipScoreCache.size >= CHIP_SCORE_CACHE_LIMIT) chipScoreCache.delete(chipScoreCache.keys().next().value!);
+    chipScoreCache.set(key, value);
+  };
   const CHIP_SCORING_KV = 'chip-scoring';
   const scoringState = async (): Promise<ChipScoringState> => {
     const parsed = chipScoringStateSchema.safeParse(await bb.storage.kv.get(CHIP_SCORING_KV) ?? {});
@@ -619,7 +622,7 @@ export default async function plugin(bb: BbPluginApi) {
       input.manualKey !== undefined || input.customKey !== undefined;
     const next: ChipScoringState = { ...state, connection, revision: randomUUID(),
       ...(changingConnection ? { lastError: null, lastScoredAt: null, lastRequestAt: null } : {}),
-      enabled: input.enabled ?? state.enabled, source: input.source ?? state.source,
+      enabled: input.enabled ?? state.enabled, suggestFromContext: input.suggestFromContext ?? state.suggestFromContext, source: input.source ?? state.source,
       catalogName: input.catalogName === undefined ? state.catalogName : input.catalogName };
     if (input.customKey && !input.connection) throw new Error('Укажите адрес для ключа System One.');
     if (input.connection && !input.customKey && !systemOneKey((await settings.get()).systemOneCredential, input.connection.endpoint)) {
@@ -658,13 +661,13 @@ export default async function plugin(bb: BbPluginApi) {
   }
   type ScoreOptions = { id: string; command: string }[];
   type ScoreResult = { probabilities: Record<string, number> } | { error: string; detail: string };
-  async function requestScores(reply: string, options: ScoreOptions, profile: ChipScoringState): Promise<ScoreResult> {
+  async function requestScores(reply: string, options: ScoreOptions, profile: ChipScoringState, discover: boolean): Promise<ScoreResult> {
     const resolved = await resolveDecisionsKey(profile);
     if ('error' in resolved) return { error: resolved.error, detail: resolved.error };
     const connection = profile.connection;
     const provider = connection ? 'System One' : 'Gemini';
     try {
-      const request = decisionsRequest(reply, options);
+      const request = decisionsRequest(reply, options, discover);
       const headers: Record<string, string> = { 'content-type': 'application/json' };
       if (connection) headers.Authorization = `Bearer ${resolved.key}`;
       else headers['x-goog-api-key'] = resolved.key;
@@ -691,10 +694,10 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
   let lastStart = 0;
-  async function evaluateChips(reply: string, options: ScoreOptions, profile: ChipScoringState) {
+  async function evaluateChips(reply: string, options: ScoreOptions, profile: ChipScoringState, discover = false) {
     lastStart = Math.max(Date.now(), lastStart + 1);
     const started = lastStart;
-    const result = await requestScores(reply, options, profile);
+    const result = await requestScores(reply, options, profile, discover);
     await serial(CHIP_SCORING_KV, async () => {
       const state = await scoringState();
       if (state.revision !== profile.revision || (state.lastRequestAt ?? 0) > started) return;
@@ -718,24 +721,51 @@ export default async function plugin(bb: BbPluginApi) {
     const top = options.reduce((a, b) => (probabilities[b.id] ?? 0) > (probabilities[a.id] ?? 0) ? b : a).id;
     bb.log.info(`aif-chat: chips scored threadId=${threadId} options=${options.length} top=${top} ms=${Date.now() - started}`);
   }
-  async function chipScoringFor(threadId: string, sourceKey: string, reply: string, items: Suggestions['items']) {
-    const options = items.filter(item => item.available);
+  function rankChips(threadId: string, scope: string, input: string, combined: Suggestions['items'], profile: ChipScoringState) {
+    const options = combined.filter(item => item.available);
     if (options.length < 2) return;
-    const profile = await scoringState();
-    if (!profile.enabled) return;
-    const key = scoringKey(profile.revision + ':' + sourceKey, options.map(item => item.id));
+    const key = scoringKey(scope, options.map(item => item.command));
     const cached = chipScoreCache.get(key);
     if (cached) {
-      for (const item of items) {
-        const p = cached[item.id];
-        if (p !== undefined) item.probability = p;
-      }
-      return;
+      for (const item of options) item.probability = cached[item.id] ?? null;
+    } else if (!chipScoreInflight.has(key)) {
+      chipScoreInflight.add(key);
+      void scoreChips(threadId, key, input, options, profile)
+        .catch(() => {}).finally(() => chipScoreInflight.delete(key));
     }
-    if (chipScoreInflight.has(key)) return;
+  }
+  async function chipScoringFor(threadId: string, sourceKey: string, reply: string, items: Suggestions['items'],
+    snapshot: Snapshot, history: HistoryRow[], offered: string[], hidden: string[], gate?: ReturnType<typeof analyzeReply>) {
+    if (!items.some(item => item.available) && !hidden.length) return;
+    const profile = await scoringState();
+    if (!profile.enabled) return;
+    const scope = threadId + ':' + profile.revision + ':' + sourceKey;
+    if (!profile.suggestFromContext || gate?.error || snapshot.profile === 'invalid' || snapshot.pendingConfirmation !== false
+      || snapshot.pendingQuestions !== 0 || !['idle', 'error'].includes(snapshot.threadState)) {
+      return rankChips(threadId, scope, reply, items, profile);
+    }
+    const candidates = contextCandidates(snapshot, offered, gate);
+    if (!candidates.length) return rankChips(threadId, scope, reply, items, profile);
+    const input = chipContext(snapshot, history, reply);
+    const contextScope = scope + ':' + createHash('sha256').update(JSON.stringify([input, candidates])).digest('hex');
+    const key = 'discover:' + contextScope;
+    const selected = (scores: Record<string, number>) => candidates.filter(c => scores[c.id] > (scores.none ?? 0))
+      .sort((a, b) => scores[b.id] - scores[a.id]).slice(0, 2).filter(c => !hidden.includes(c.id));
+    const cached = chipScoreCache.get(key);
+    if (cached) {
+      items.push(...selected(cached));
+      return rankChips(threadId, contextScope, input, items, profile);
+    }
+    if (chipScoreInflight.has(key) || !items.some(item => item.available)) return;
     chipScoreInflight.add(key);
-    void scoreChips(threadId, key, reply, options.map(item => ({ id: item.id, command: item.command })), profile)
-      .catch(() => {}).finally(() => { chipScoreInflight.delete(key); });
+    const options = [...candidates, { id: 'none', command: 'No useful addition' }];
+    void evaluateChips(input, options, profile, true).then(async result => {
+      if (disposed || (await scoringState()).revision !== profile.revision) return;
+      const scores = 'probabilities' in result ? result.probabilities : {};
+      rememberChipScore(key, scores);
+      rankChips(threadId, contextScope, input, [...items, ...selected(scores)], profile);
+      bb.rpc.experimental_invalidate([threadTag(threadId)]);
+    }).catch(() => {}).finally(() => chipScoreInflight.delete(key));
   }
   bb.rpc.register(rpcContract, {
     cardVisibility: async input => {
@@ -792,7 +822,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     dismissSuggestion: input => serial(input.threadId, async () => {
       const current = await suggested(input.threadId);
-      if (current.view.sourceKey !== input.sourceKey || !current.ids.includes(input.commandId)) throw new Error('Предложения изменились. Обновите их.');
+      if (current.view.sourceKey !== input.sourceKey || !(current.ids.includes(input.commandId) || current.hidden.includes(input.commandId))) throw new Error('Предложения изменились. Обновите их.');
       await bb.storage.kv.set(`suggestions-dismissed:${input.threadId}`, { sourceKey: input.sourceKey, ids: [...new Set([...current.hidden, input.commandId])] } satisfies DismissedSuggestions);
       bb.rpc.experimental_invalidate([threadTag(input.threadId)]);
       return { dismissed: true as const };

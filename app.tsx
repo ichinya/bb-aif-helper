@@ -740,7 +740,7 @@ function useChipScoringView(threadId: string) {
   return { view, setView, error, setError };
 }
 
-const CHIP_SCORING_HELP = 'При двух и более доступных кнопках плагин отправляет выбранному сервису последний ответ агента и варианты команд. Ответ может содержать пути и код проекта.';
+const CHIP_SCORING_HELP = 'Для расчёта процентов плагин отправляет выбранному сервису ответ агента и доступные команды. При подборе дополнительных кнопок сервис также получает недавнюю переписку и сведения о плане. Сообщения могут содержать пути и код проекта.';
 const scoringField = 'h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
 /** Plugin-wide scoring configuration. Saved credentials are never returned to the tab. */
@@ -793,6 +793,13 @@ function ChipScoringSection({ threadId }: { threadId: string }) {
         </div>
         {help && <p className="m-0 text-xs text-muted-foreground">{CHIP_SCORING_HELP}</p>}
       </div>
+      {view.enabled && <label className="flex items-start gap-2 py-2.5 text-sm">
+        <input type="checkbox" className="mt-1" checked={view.suggestFromContext} disabled={saving || !!draft}
+          onChange={e => void save({ suggestFromContext: e.target.checked })} />
+        <span>Предлагать кнопки из контекста
+          <span className="block text-xs text-muted-foreground">Сервис получает недавние сообщения, сведения о плане и варианты установленных команд. Подбирает до двух дополнительных кнопок, затем оценивает весь список.</span>
+        </span>
+      </label>}
       <div className="flex flex-col items-start gap-2 py-2.5">
         {view.connection && <div className="break-all text-xs text-muted-foreground">{view.connection.model}<br />{view.connection.endpoint}</div>}
         {draft ? <form className="grid w-full gap-2 text-xs" onSubmit={async e => {
@@ -1017,7 +1024,7 @@ function SuggestionBar({ threadId, composer, composerBusy }: { threadId: string;
   }
   const busy = composerBusy || !!data && !['idle', 'error'].includes(data.threadState);
   if (!data?.items.length && !data?.gate && !data?.gateError && !error && !notice) return null;
-  return <section className="aif-suggestions" aria-label="Команды из последнего ответа агента">
+  return <section className="aif-suggestions" aria-label="Предложенные команды AI Factory">
     {(data?.gate || data?.gateError) && <div className={`aif-message-gate${data.gate?.blocking || data.gateError ? ' aif-message-gate-blocking' : ''}`} role="group" aria-label="Gate из последнего ответа">
       {data.gate && <><div className="aif-message-gate-heading">
         <strong>{data.gate.gate} · {data.gate.status.toUpperCase()} в ответе</strong>
@@ -1038,7 +1045,7 @@ function SuggestionBar({ threadId, composer, composerBusy }: { threadId: string;
       const scored = data.items.some(i => typeof i.probability === 'number');
       const items = scored ? [...data.items].sort((a, b) => (b.probability ?? -1) - (a.probability ?? -1)) : data.items;
       const topId = scored ? items[0].id : null;
-      return <><span className="aif-suggestions-label">{data.origin === 'plan' ? 'Следующий шаг по плану' : 'Из ответа агента'}</span><div className="aif-suggestion-list">{items.map(item => {
+      return <><span className="aif-suggestions-label">{items.some(i => i.fromContext) ? 'Предложенные команды' : data.origin === 'plan' ? 'Следующий шаг по плану' : 'Из ответа агента'}</span><div className="aif-suggestion-list">{items.map(item => {
         const pct = typeof item.probability === 'number' ? chipPercent(item.probability) : null;
         const text = item.label ?? item.command;
         const label = `${pct ? `${pct} ` : ''}${text}`;

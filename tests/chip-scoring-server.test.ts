@@ -30,7 +30,7 @@ test('chipScoring returns defaults and reports the catalog as unavailable', asyn
   const { h } = await setup({ catalogError: true });
   try {
     const view = await h.harness.behavior.callRpc('chipScoring', {}) as any;
-    assert.deepEqual(view, { enabled: false, source: 'catalog', catalogName: null, catalogAvailable: false,
+    assert.deepEqual(view, { enabled: false, suggestFromContext: false, source: 'catalog', catalogName: null, catalogAvailable: false,
       catalogNames: [], manualKeySet: false, connection: null, lastError: null, lastScoredAt: null, lastRequestAt: null });
     assert(h.harness.inspection.logEntries.some(e => e.level === 'warn' && e.message.includes('env-catalog unavailable')));
   } finally { await h.harness.lifecycle.dispose(); }
@@ -87,7 +87,7 @@ test('setChipScoring persists source and catalogName and keeps other fields', as
   } finally { await h.harness.lifecycle.dispose(); }
 });
 
-async function setupScoring(options: { reply?: string; settings?: Record<string, string | number | boolean>; variables?: string[]; catalogError?: boolean } = {}) {
+async function setupScoring(options: { history?: import('../check-history.ts').HistoryRow[]; reply?: string; settings?: Record<string, string | number | boolean>; variables?: string[]; catalogError?: boolean } = {}) {
   const rpcCalls: any[] = [];
   const h = createFakePluginHost({
     pluginId: 'aif-chat', agentSkillIds: ['aif-chat'], experimental_hostEntry: true,
@@ -96,7 +96,7 @@ async function setupScoring(options: { reply?: string; settings?: Record<string,
       threads: {
         get: async () => makeThreadResponse({ id: 'thr_test', projectId: 'proj_test', environmentId: 'env_test', status: 'idle', runtime: { displayStatus: 'idle' } }),
         output: async () => ({ output: options.reply ?? '$aif-plan tighten the gate; then $aif-explore leftovers' }),
-        events: { list: async () => [] },
+        events: { list: async () => options.history ?? [] },
         interactions: { list: async () => [] },
       },
       environments: { get: async () => ({ id: 'env_test', projectId: 'proj_test', path: '/project', hostId: 'host_test', status: 'ready', lifecycle: { phase: 'active' } }) as any },
@@ -115,10 +115,10 @@ async function setupScoring(options: { reply?: string; settings?: Record<string,
   await plugin(h.bb);
   return { h, rpcCalls };
 }
-function stubFetch(impl: () => Response | Promise<Response>) {
+function stubFetch(impl: (init: RequestInit) => Response | Promise<Response>) {
   const calls: { url: unknown; init: any }[] = [];
   const original = globalThis.fetch;
-  globalThis.fetch = (async (url: any, init: any) => { calls.push({ url, init }); return impl(); }) as typeof fetch;
+  globalThis.fetch = (async (url: any, init: any) => { calls.push({ url, init }); return impl(init); }) as typeof fetch;
   return { calls, restore: () => { globalThis.fetch = original; } };
 }
 const tick = () => new Promise(r => setTimeout(r, 5));
@@ -358,5 +358,68 @@ test('chip scoring skips the request when fewer than two chips are available', a
     assert(rpcCalls.every(c => c.method !== 'env_get_value'));
     const state = await h.harness.behavior.callRpc('chipScoring', {}) as any;
     assert.equal(state.lastError, null); assert.equal(state.lastScoredAt, null);
+  } finally { fetch.restore(); await h.harness.lifecycle.dispose(); }
+});
+
+test('context discovery precedes combined scoring, excludes offered skills and supports using and hiding the new chips', async () => {
+  const reply = '$aif-plan уточнить задачу';
+  const history = [{ seq: 4, type: 'client/turn/requested', data: { input: [
+    { type: 'text', text: 'Проверить интерфейс' }, { type: 'text', visibility: 'agent-only', text: 'hidden marker' },
+  ] } }];
+  const { h } = await setupScoring({ reply, history: history as any });
+  const fetch = stubFetch(init => {
+    const body = JSON.parse(String(init.body));
+    const ids = Object.keys(body.questions.next.criteria);
+    const choices: Record<string, number> = ids.includes('none')
+      ? { 'aif-verify': 0.6, 'aif-review': 0.3, 'aif-qa': 0.09, none: 0.01, 'aif-unknown': 1 }
+      : { 'aif-plan': 0.1, 'aif-verify': 0.7, 'aif-review': 0.2 };
+    return Response.json({ answers: { next: { probabilities: choices } } });
+  });
+  try {
+    const rpc = h.harness.behavior;
+    await rpc.callRpc('setChipScoring', { enabled: true, suggestFromContext: true, source: 'manual', manualKey: 'test-key' });
+    const read = () => rpc.callRpc('suggestions', { threadId: 'thr_test' }) as Promise<any>;
+    const first = await read();
+    assert.deepEqual(first.items.map((i: any) => i.id), ['aif-plan']);
+    assert(await waitFor(() => fetch.calls.length === 2));
+    const [discovery, ranking] = fetch.calls.map(call => JSON.parse(call.init.body));
+    assert.match(discovery.input, /Проверить интерфейс/);
+    assert.match(discovery.input, /Demo/);
+    assert(!discovery.input.includes('hidden marker'));
+    assert(!('aif-plan' in discovery.questions.next.criteria));
+    assert.deepEqual(Object.keys(ranking.questions.next.criteria).sort(), ['aif-plan', 'aif-review', 'aif-verify']);
+    const view = await read();
+    assert.deepEqual(view.items.map((i: any) => i.probability), [0.1, 0.7, 0.2]);
+    assert(view.items[1].fromContext);
+    const input = { threadId: 'thr_test', sourceKey: view.sourceKey, commandId: 'aif-verify' };
+    const run = await rpc.callRpc('runSuggestion', { ...input, fingerprint: view.fingerprint, requestId: crypto.randomUUID() }) as any;
+    assert.equal(run.command, view.items[1].command);
+    await rpc.callRpc('dismissSuggestion', input);
+    const remaining = await read();
+    assert.deepEqual(remaining.items.map((i: any) => i.id), ['aif-plan', 'aif-review']);
+    assert.equal(fetch.calls.filter(call => 'none' in JSON.parse(call.init.body).questions.next.criteria).length, 1);
+    await rpc.callRpc('setChipScoring', { suggestFromContext: false });
+    assert.deepEqual((await read()).items.map((i: any) => i.id), ['aif-plan']);
+  } finally { fetch.restore(); await h.harness.lifecycle.dispose(); }
+});
+
+test('System One can decline all context additions and still rank the original chips', async () => {
+  const { h } = await setupScoring();
+  const endpoint = 'https://gateway.example/v1/systemone';
+  const fetch = stubFetch(init => {
+    const { questions, state, input } = JSON.parse(String(init.body));
+    assert(state && !input);
+    const scores = Object.fromEntries(Object.keys(questions.next.criteria).map(id => [id, id === 'none' ? 1 : 0.1]));
+    return Response.json({ answers: { next: { probabilities: scores } } });
+  });
+  try {
+    const rpc = h.harness.behavior;
+    await rpc.callRpc('setChipScoring', { enabled: true, suggestFromContext: true, connection: { endpoint, model: 'test' }, customKey: 'test-key' });
+    const read = () => rpc.callRpc('suggestions', { threadId: 'thr_test' }) as Promise<any>;
+    await Promise.all([read(), read()]);
+    assert(await waitFor(async () => (await read()).items.every((item: any) => item.probability === 0.1)));
+    assert.equal(fetch.calls.length, 2);
+    assert(fetch.calls.every(c => c.url === endpoint));
+    assert.equal((await read()).items.length, 2);
   } finally { fetch.restore(); await h.harness.lifecycle.dispose(); }
 });

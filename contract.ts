@@ -19,13 +19,13 @@ export const aifModeViewSchema = z.object({ projectId: z.string(), on: z.boolean
 export type DelegationView = z.infer<typeof delegationViewSchema>;
 export const chipScoringViewSchema = z.object({
   connection: systemOneConnectionSchema.nullable(),
-  enabled: z.boolean(), source: z.enum(['catalog', 'manual']), catalogName: z.string().nullable(),
+  enabled: z.boolean(), suggestFromContext: z.boolean().default(false), source: z.enum(['catalog', 'manual']), catalogName: z.string().nullable(),
   catalogAvailable: z.boolean(), catalogNames: z.array(z.string()), manualKeySet: z.boolean(),
   lastError: z.string().nullable(), lastScoredAt: z.number().nullable(), lastRequestAt: z.number().nullable().default(null),
 });
 export type ChipScoringView = z.infer<typeof chipScoringViewSchema>;
 const chipScoringInput = z.object({
-  enabled: z.boolean().optional(), source: z.enum(['catalog', 'manual']).optional(),
+  enabled: z.boolean().optional(), suggestFromContext: z.boolean().optional(), source: z.enum(['catalog', 'manual']).optional(),
   catalogName: z.string().max(200).nullable().optional(), manualKey: z.string().max(500).nullable().optional(),
   connection: systemOneConnectionSchema.nullable().optional(), customKey: z.string().trim().min(1).max(4096).optional(),
 }).strict();

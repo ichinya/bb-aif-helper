@@ -1,10 +1,10 @@
 // These are literal agent messages, never shell commands. Markdown delimiters
 // and subsequent commands/shell statements do not belong to the invocation.
-import { parseReplyGate } from './gate.ts';
+import { blockedByGate, parseReplyGate } from './gate.ts';
 import { briefCommands } from './session-brief.ts';
 import { gateEvidenceCommands } from './gate-evidence-command.ts';
 import { confirmationProse } from './confirmation.ts';
-import type { Action, Suggestions } from './model.ts';
+import type { Action, Snapshot, Suggestions } from './model.ts';
 
 function argumentsAfter(tail: string, code: boolean): string | null {
   const tokens: string[] = [];
@@ -208,4 +208,28 @@ export function nextStepItems(actions: readonly Action[], o: { skills: readonly 
     seen.add(id);
     return [{ id, command: `${o.prefix}${body}`, available: true, reason: 'Следующий шаг', probability: null }];
   }).filter(item => !o.hidden.includes(item.id)).slice(0, 3);
+}
+
+/** Commands come from the local workflow, including its target arguments and availability checks. */
+export function contextCandidates(snapshot: Snapshot, offered: readonly string[], reply?: ReturnType<typeof analyzeReply>): Suggestions['items'] {
+  const excluded = new Set(offered);
+  const candidates: Suggestions['items'] = [];
+  const routed = new Set(['aif-implement', 'aif-done', 'aif-commit', 'aif-mode', 'aif-session-brief', 'aif-gate-evidence']);
+  for (const action of snapshot.actions) {
+    const id = /^[/$](aif(?:-[a-z0-9]+)*)(?:\s|$)/.exec(action.command)?.[1];
+    if (!id) continue;
+    routed.add(id);
+    if (!action.available || excluded.has(id) || !snapshot.skills.includes(id)
+      || blockedByGate(id, reply?.gate ?? null, reply?.warning)) continue;
+    excluded.add(id);
+    candidates.push({ id, command: action.command, available: true, probability: null, fromContext: true,
+      reason: 'Из контекста · ' + action.reason });
+  }
+  const prefix = ['codex', 'codex-app'].includes(snapshot.runtime) ? '$' : '/';
+  for (const id of new Set(snapshot.skills)) {
+    if (routed.has(id) || excluded.has(id) || id.length > 100 || !/^aif(?:-[a-z0-9]+)*$/.test(id)
+      || blockedByGate(id, reply?.gate ?? null, reply?.warning)) continue;
+    candidates.push({ id, command: prefix + id, available: true, probability: null, fromContext: true, reason: 'Из контекста · установленный навык' });
+  }
+  return candidates;
 }

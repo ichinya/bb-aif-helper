@@ -1366,6 +1366,7 @@ test('«Оценка кнопок» toggles scoring, hides the catalog without e
   try {
     fireEvent.click(await slot.findByRole('tab', { name: /Настройки/ }));
     await slot.findByRole('heading', { name: 'Оценка кнопок' });
+    assert.equal(slot.queryByRole('checkbox', { name: /Предлагать кнопки из контекста/ }), null);
     fireEvent.click(await slot.findByRole('button', { name: 'Выкл' }));
     await waitFor(() => assert.deepEqual(saved, [{ enabled: true }]));
     const toggle = await slot.findByRole('button', { name: 'Вкл' });
@@ -1380,6 +1381,9 @@ test('«Оценка кнопок» toggles scoring, hides the catalog without e
     await slot.findByText('Gemini ответил HTTP 403');
     fireEvent.click(slot.getByRole('button', { name: 'Удалить ключ' }));
     await waitFor(() => assert.deepEqual(saved[2], { manualKey: null }));
+    const contextual = await slot.findByRole('checkbox', { name: /Предлагать кнопки из контекста/ });
+    fireEvent.click(contextual);
+    await waitFor(() => assert.deepEqual(saved[3], { suggestFromContext: true }));
   } finally { slot.lifecycle.unmount(); }
 });
 

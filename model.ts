@@ -94,7 +94,7 @@ export const suggestionsSchema = z.object({
   // 'plan' when the reply had no commands and chips come from the plan's next steps.
   origin: z.enum(['reply', 'plan']).default('reply'),
   items: z.array(z.object({ id: z.string(), command: z.string(), available: z.boolean(), reason: z.string(), probability: z.number().min(0).max(1).nullable().default(null),
-    label: z.string().optional(), kind: z.literal('improve-approval').optional() })),
+    fromContext: z.boolean().optional(), label: z.string().optional(), kind: z.literal('improve-approval').optional() })),
 });
 export type Suggestions = z.infer<typeof suggestionsSchema>;
 export const systemOneConnectionSchema = z.object({
@@ -108,6 +108,7 @@ export const systemOneConnectionSchema = z.object({
 }).strict();
 export const chipScoringStateSchema = z.object({
   enabled: z.boolean().default(false),
+  suggestFromContext: z.boolean().default(false),
   connection: systemOneConnectionSchema.nullable().default(null),
   revision: z.string().default(''),
   source: z.enum(['catalog', 'manual']).default('catalog'),
