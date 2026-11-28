@@ -114,6 +114,7 @@ export const chipScoringStateSchema = z.object({
   catalogName: z.string().nullable().default(null),
   lastError: z.string().nullable().default(null),
   lastScoredAt: z.number().nullable().default(null),
+  lastRequestAt: z.number().nullable().default(null),
 });
 export type ChipScoringState = z.infer<typeof chipScoringStateSchema>;
 export const RESEARCH_ROLES = ['research', 'research2', 'research3'] as const;

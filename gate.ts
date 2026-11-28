@@ -55,6 +55,9 @@ export function parseReplyGate(text: string): { gate: GateResult | null; error: 
   const parsed = gateResultSchema.safeParse(value);
   if (!parsed.success) return result(null, 'Gate не соответствует схеме v1: проверьте gate, status, blockers и suggested_next.');
   const gate = parsed.data;
+  if (gate.status === 'warn' && !gate.blocking && gate.blockers.length && gate.blockers.every(item => item.severity === 'warning')) {
+    return result(gate, 'Для неблокирующего WARN укажите "blockers": [] и перенесите предупреждения в текст перед JSON.');
+  }
   if (gate.blocking !== (gate.status === 'fail') || (gate.status === 'fail' ? !gate.blockers.length : !!gate.blockers.length)) {
     return result(gate, 'Противоречивые status, blocking и blockers. Следующий шаг не подтверждён.');
   }

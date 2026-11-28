@@ -748,7 +748,9 @@ function ChipScoringSection({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const { view, setView, error, setError } = useChipScoringView(threadId);
   const [help, setHelp] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [writing, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const saving = writing || checking;
   const [manualKey, setManualKey] = useState('');
   const [draft, setDraft] = useState<{ endpoint: string; model: string; key: string } | null>(null);
   const mounted = useRef(true);
@@ -757,6 +759,15 @@ function ChipScoringSection({ threadId }: { threadId: string }) {
     {error ? <p className="m-0 text-xs text-muted-foreground">Настройка недоступна: {error}</p> : <div className="h-20 animate-pulse rounded-md bg-muted motion-reduce:animate-none" aria-hidden="true" />}
   </Section>;
   const source = view.catalogAvailable ? view.source : 'manual';
+  const lastRequestAt = view.lastRequestAt ?? (view.lastError ? null : view.lastScoredAt);
+  const check = async () => {
+    setChecking(true); setError('');
+    try {
+      const next = await rpc.call('checkChipScoring', {});
+      if (mounted.current) setView(next);
+    } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : String(e)); }
+    finally { if (mounted.current) setChecking(false); }
+  };
   const save = async (input: ChipScoringInput) => {
     if (saving) return false;
     setSaving(true); setError('');
@@ -801,6 +812,8 @@ function ChipScoringSection({ threadId }: { threadId: string }) {
             <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => setDraft(null)}>Отмена</Button>
           </div>
         </form> : <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={saving || (!view.connection && view.enabled && source === 'manual' && !!manualKey.trim())} onClick={() => void check()}>
+            {checking ? 'Проверяю…' : 'Проверить'}</Button>
           <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() =>
             setDraft({ endpoint: view.connection?.endpoint ?? '', model: view.connection?.model ?? '', key: '' })}>
             {view.connection ? 'Изменить подключение' : 'Свой API (System One)'}</Button>
@@ -836,12 +849,13 @@ function ChipScoringSection({ threadId }: { threadId: string }) {
           </div>
         </div>}
       </>}
-      {view.enabled && !draft && <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-        {(view.connection || source === 'manual') && view.manualKeySet && <span>Ключ задан</span>}
-        {typeof view.lastScoredAt === 'number' && <span>Последняя оценка: {new Date(view.lastScoredAt).toLocaleTimeString('ru-RU')}</span>}
+      {!draft && <div className="flex flex-col gap-1 py-2 text-xs text-muted-foreground" role="status" aria-live="polite">
+        {view.enabled && (view.connection || source === 'manual') && view.manualKeySet && <span>Ключ задан</span>}
+        {typeof lastRequestAt === 'number' && <span>Последний запрос · {new Date(lastRequestAt).toLocaleString('ru-RU')}</span>}
+        {view.lastError ? <Callout tone="error">{view.lastError}</Callout>
+          : lastRequestAt ? <span>Оценки кнопок получены</span> : <span>Запросов ещё не было</span>}
       </div>}
     </div>
-    {view.lastError && <Callout>{view.lastError}</Callout>}
     {error && <Callout tone="error" role="status">{error}</Callout>}
   </Section>;
 }
@@ -1005,9 +1019,15 @@ function SuggestionBar({ threadId, composer, composerBusy }: { threadId: string;
   if (!data?.items.length && !data?.gate && !data?.gateError && !error && !notice) return null;
   return <section className="aif-suggestions" aria-label="Команды из последнего ответа агента">
     {(data?.gate || data?.gateError) && <div className={`aif-message-gate${data.gate?.blocking || data.gateError ? ' aif-message-gate-blocking' : ''}`} role="group" aria-label="Gate из последнего ответа">
-      {data.gate && <><div className="aif-message-gate-heading"><strong>{data.gate.gate} · {data.gate.status.toUpperCase()} в ответе</strong><span>{data.gate.blocking ? 'Блокирует следующий этап' : data.gateWarning ? 'Переход не подтверждён' : 'Не блокирует'}</span></div>
+      {data.gate && <><div className="aif-message-gate-heading">
+        <strong>{data.gate.gate} · {data.gate.status.toUpperCase()} в ответе</strong>
+        <span>{!data.gateError && data.gate.blocking ? 'Блокирует следующий этап' : data.gateError || data.gateWarning ? 'Переход не подтверждён' : 'Не блокирует'}</span>
+      </div>
         <p className="aif-muted aif-small">Заявленный результат из чата. Актуальность отчёта для текущих файлов проверяет владелец workflow.</p>
-        {data.gate.blockers.length ? <details open><summary>Блокирующие проблемы · {data.gate.blockers.length}</summary><ul>{data.gate.blockers.map((b, i) => <li key={`${b.id}-${i}`}><strong>{b.id}</strong> <span className="aif-muted">· {b.severity}</span><p>{b.summary}</p>{b.file && <code>{b.file}</code>}</li>)}</ul></details> : <p className="aif-small">Блокирующих проблем нет.</p>}
+        {data.gate.blockers.length ? <details open>
+          <summary>{data.gate.blocking ? 'Блокирующие проблемы' : 'Замечания из блока blockers'} · {data.gate.blockers.length}</summary>
+          <ul>{data.gate.blockers.map((b, i) => <li key={`${b.id}-${i}`}><strong>{b.id}</strong> <span className="aif-muted">· {b.severity}</span><p>{b.summary}</p>{b.file && <code>{b.file}</code>}</li>)}</ul>
+        </details> : !data.gateError && <p className="aif-small">Блокирующих проблем нет.</p>}
         {data.gate.suggested_next?.reason && <p className="aif-small"><strong>{data.gate.suggested_next.command ? 'Следующий шаг: ' : 'Пояснение: '}</strong>{data.gate.suggested_next.reason}</p>}
         {!!data.gate.affected_files.length && <details><summary>Затронутые файлы · {data.gate.affected_files.length}</summary><ul>{data.gate.affected_files.map((file, i) => <li key={i}><code>{file}</code></li>)}</ul></details>}
       </>}

@@ -65,6 +65,8 @@ The composer recognizes both `$aif…` and `/aif…` commands in the last assist
 
 The final `aif-gate-result` is parsed separately: declared status, blockers, affected files and the allowlisted `suggested_next` are shown above the composer. Non-blocking WARN can suggest commit; blocking or malformed gates cannot authorize advancing to commit/done/archive/implement through plugin buttons. The selected skill receives normalized gate data as untrusted context and must recheck freshness. Preserve the original machine-readable output contract, including the final-block position; never append a chat directive after it just to update this UI.
 
+For a non-blocking WARN, set `"blocking": false` and `"blockers": []`. Put advisory warnings in the human summary before the JSON fence. Use `blockers` for findings that stop the current gate, including warning-severity findings only when policy escalates them.
+
 If valid gate JSON is followed by extra prose, the client shows a separate format warning while retaining the declared result and an allowed remediation such as aif-fix. Trailing prose is never handoff input. This does not relax the final-block contract: implementation, commit and finalization remain blocked, even for PASS, and the result does not establish current-input freshness. Keep gate last when generating a response; malformed JSON or contradictory gate fields remain errors.
 
 In the transcript, the JSON fence is collapsed under "Данные gate" by its code-fence renderer. Expanding it shows BB's original code block and copy control. Keep emitting the required gate JSON unchanged: this is a presentation feature, not permission to omit the machine-readable result. Malformed or interrupted gates still show a visible error.

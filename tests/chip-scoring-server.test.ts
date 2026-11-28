@@ -31,7 +31,7 @@ test('chipScoring returns defaults and reports the catalog as unavailable', asyn
   try {
     const view = await h.harness.behavior.callRpc('chipScoring', {}) as any;
     assert.deepEqual(view, { enabled: false, source: 'catalog', catalogName: null, catalogAvailable: false,
-      catalogNames: [], manualKeySet: false, connection: null, lastError: null, lastScoredAt: null });
+      catalogNames: [], manualKeySet: false, connection: null, lastError: null, lastScoredAt: null, lastRequestAt: null });
     assert(h.harness.inspection.logEntries.some(e => e.level === 'warn' && e.message.includes('env-catalog unavailable')));
   } finally { await h.harness.lifecycle.dispose(); }
 });
@@ -221,7 +221,7 @@ test('chip scoring HTTP failure: cached empty result, lastError set, fetch once'
     await h.harness.behavior.callRpc('setChipScoring', { enabled: true, source: 'manual', manualKey: 'k' });
     const read = () => h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as Promise<any>;
     await read();
-    const failed = await waitFor(async () => (await h.harness.behavior.callRpc('chipScoring', {}) as any).lastError === 'Gemini ответил HTTP 403');
+    const failed = await waitFor(async () => (await h.harness.behavior.callRpc('chipScoring', {}) as any).lastError === 'Gemini ответил HTTP 403 — denied');
     assert(failed, 'lastError never set');
     assert.equal(fetch.calls.length, 1);
     const view = await read();
@@ -229,6 +229,63 @@ test('chip scoring HTTP failure: cached empty result, lastError set, fetch once'
     await read();
     assert.equal(fetch.calls.length, 1);
     assert(h.harness.inspection.logEntries.some(e => e.level === 'warn' && e.message === 'aif-chat: chip scoring failed threadId=thr_test: HTTP 403'));
+  } finally { fetch.restore(); await h.harness.lifecycle.dispose(); }
+});
+
+test('manual check uses the saved endpoint while disabled, reports a redacted denial and retries after an invalid response', async () => {
+  const { h } = await setup();
+  const customKey = 'test-provider-credential';
+  const connection = { endpoint: 'https://gateway.example/v1/systemone', model: 'some/model:free' };
+  const denied = 'Model is not allowed for this API key';
+  const results = [
+    Response.json({ error: { message: denied + ': ' + customKey } }, { status: 403 }),
+    Response.json({ answers: {} }),
+    Response.json({ answers: { next: { probabilities: { 'aif-plan': 0.2, 'aif-verify': 0.8 } } } }),
+  ];
+  const fetch = stubFetch(() => results.shift()!);
+  try {
+    const rpc = h.harness.behavior;
+    await rpc.callRpc('setChipScoring', { connection, customKey });
+    const check = () => rpc.callRpc('checkChipScoring', {}) as Promise<any>;
+    const rejected = await check();
+    assert.equal(rejected.enabled, false);
+    assert.equal(rejected.lastError, 'System One ответил HTTP 403 — ' + denied + ': [скрыто]');
+    assert.equal(rejected.lastScoredAt, null);
+    assert(rejected.lastRequestAt > 0);
+    const enabled = await rpc.callRpc('setChipScoring', { enabled: true }) as any;
+    assert.equal(enabled.lastError, rejected.lastError);
+    assert.equal(enabled.lastRequestAt, rejected.lastRequestAt);
+    assert.equal(fetch.calls[0].url, connection.endpoint);
+    assert.equal(JSON.parse(fetch.calls[0].init.body).model, connection.model);
+    assert.match((await check()).lastError, /ожидались вероятности/);
+    const ok = await check();
+    assert.equal(ok.lastError, null);
+    assert(ok.lastRequestAt > rejected.lastRequestAt);
+    assert(ok.lastScoredAt >= ok.lastRequestAt);
+    assert.deepEqual(await rpc.callRpc('chipScoring', {}), ok);
+    assert.equal(fetch.calls.length, 3);
+    assert(!JSON.stringify(await h.bb.storage.kv.get('chip-scoring')).includes(customKey));
+    assert(h.harness.inspection.logEntries.every(e => !e.message.includes(customKey)));
+  } finally { fetch.restore(); await h.harness.lifecycle.dispose(); }
+});
+
+test('an older background failure cannot replace a newer manual check', async () => {
+  const { h } = await setupScoring();
+  let complete!: (response: Response) => void;
+  let first = true;
+  const fetch = stubFetch(() => {
+    if (first) { first = false; return new Promise(resolve => { complete = resolve; }); }
+    return Response.json({ answers: { next: { probabilities: { 'aif-plan': 0.1, 'aif-verify': 0.9 } } } });
+  });
+  try {
+    const rpc = h.harness.behavior;
+    await rpc.callRpc('setChipScoring', { enabled: true, source: 'manual', manualKey: 'test-key' });
+    await rpc.callRpc('suggestions', { threadId: 'thr_test' });
+    assert(await waitFor(() => !!complete));
+    const success = await rpc.callRpc('checkChipScoring', {});
+    complete(Response.json({ error: { message: 'old error' } }, { status: 403 }));
+    assert(await waitFor(() => h.harness.inspection.logEntries.some(e => e.message.includes('HTTP 403'))));
+    assert.deepEqual(await rpc.callRpc('chipScoring', {}), success);
   } finally { fetch.restore(); await h.harness.lifecycle.dispose(); }
 });
 

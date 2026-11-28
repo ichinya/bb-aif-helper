@@ -282,6 +282,34 @@ test('status restores completed verify from chat, persists across reload and doe
   } finally { await live.lifecycle.dispose(); }
 });
 
+test('a repeated verify by OpenSpec change ID replaces the previous blocking result in the card', async () => {
+  const h = await setup();
+  try {
+    const path = 'openspec/changes/demo-change/tasks.md';
+    const candidate = { path, title: 'demo-change', kind: 'openspec' as const };
+    h.value.profile = 'aifhub-openspec';
+    h.value.candidates = [candidate];
+    h.value.target = { ...h.value.target!, ...candidate, id: 'demo-change' };
+    h.value.checks = [{ id: 'verify', label: 'Verify', state: 'notrun', path: null, detail: '', required: true }];
+    const completed = (seq: number, text: string) => ({ seq, createdAt: Date.now(), type: 'item/completed', data: { item: { type: 'agentMessage', text } } });
+    const failed = completed(11, gateText({ status: 'fail', blocking: true, affected_files: [path],
+      blockers: [{ id: 'example', severity: 'error', summary: 'An earlier failure' }], suggested_next: null }));
+    h.setEvents([failed]);
+    const read = (force = false) => h.harness.behavior.callRpc('status', { threadId: 'thr_test', target: path, phase: 'verify', force }) as Promise<typeof h.value>;
+    assert.equal((await read(true)).checks[0].chat?.result.blocking, true);
+
+    const warning = gateText({ suggested_next: null });
+    h.setEvents([completed(14, warning), { seq: 13, type: 'client/turn/requested', data: { input: [{ type: 'text', text: '$aif-verify demo-change' }] } }, failed]);
+    await h.harness.behavior.emitThreadEvent('thread.idle', { thread: makeThreadResponse({ id: 'thr_test' }), lastAssistantText: warning });
+    const check = (await read()).checks[0];
+    assert.equal(check.chat?.seq, 14);
+    assert.equal(check.chat?.result.status, 'warn');
+    assert.equal(check.chat?.result.blocking, false);
+    assert.equal(check.state, 'notrun');
+    assert.equal(h.sends, 0);
+  } finally { await h.harness.lifecycle.dispose(); }
+});
+
 test('native status tool returns one directive and never dispatches a model', async () => {
   const h = await setup(); try {
     const result = await h.harness.behavior.callAgentTool('aif_chat_status', { phase: 'plan' }, { threadId: 'thr_test', projectId: 'proj_test' } as any);
@@ -1299,10 +1327,14 @@ test('gate-only results remain visible without commands; invalid gate blocks a p
     h.setOutput(gateText({ suggested_next: null }));
     const only = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
     assert.equal(only.items.length, 0); assert.equal(only.gate.status, 'warn');
-    h.setOutput('$aif-commit\n```aif-gate-result\ninvalid\n```');
-    const bad = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
-    assert(bad.gateError); assert.equal(bad.items[0].available, false);
-    await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(bad, 'aif-commit'))); assert.equal(h.sends, 0);
+    for (const invalid of ['```aif-gate-result\ninvalid\n```',
+      gateText({ blockers: [{ id: 'warning', severity: 'warning', summary: 'Advisory note' }] })]) {
+      h.setOutput('$aif-commit\n' + invalid);
+      const bad = await h.harness.behavior.callRpc('suggestions', { threadId: 'thr_test' }) as any;
+      assert(bad.gateError); assert.equal(bad.items[0].available, false);
+      await assert.rejects(h.harness.behavior.callRpc('runSuggestion', suggestionInput(bad, 'aif-commit')));
+    }
+    assert.equal(h.sends, 0);
   } finally { await h.harness.lifecycle.dispose(); }
 });
 test('slash runtimes retain slash invocation for a structured gate suggestion', async () => {

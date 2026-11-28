@@ -1043,6 +1043,32 @@ test('gate problems remain visible even with no suggested command', async () => 
     assert.ok(slot.queryByText('Из ответа агента') === null, 'element should be absent');
   } finally { slot.lifecycle.unmount(); }
 });
+
+test('non-blocking WARN with entries in blockers explains the format without labelling them blocking', async () => {
+  const code = JSON.stringify({ schema_version: 1, gate: 'verify', status: 'warn', blocking: false,
+    blockers: [{ id: 'rules-gate-evidence-missing', severity: 'warning', summary: 'Нет сохранённого результата проверки правил.' },
+      { id: 'coverage-partial-requirements', severity: 'warning', summary: 'Отчёт показывает частичное покрытие.' }],
+    affected_files: [], suggested_next: null });
+  const parsed = parseReplyGate('```aif-gate-result\n' + code + '\n```');
+  const renderer = app.codeFenceRenderers.find(item => item.id === 'gate-data')!;
+  const document = renderSlot(renderer, { code, language: 'aif-gate-result', status: 'closed', index: 0, message: props.message, Original: () => code });
+  try {
+    assert.match(document.getByRole('alert').textContent!, /"blockers": \[\].*в текст перед JSON/);
+  } finally { document.lifecycle.unmount(); }
+
+  const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' } }, rpc: {
+    suggestions: () => ({ ...suggestedData(), gate: parsed.gate, gateError: parsed.error, items: [] }),
+  } });
+  try {
+    await slot.findByText('verify · WARN в ответе');
+    assert(slot.getByText('Переход не подтверждён'));
+    assert(slot.getByText('Замечания из блока blockers · 2'));
+    assert(slot.getByText('Нет сохранённого результата проверки правил.'));
+    assert.match(slot.getByRole('alert').textContent!, /"blockers": \[\]/);
+    assert.equal(slot.queryByText(/^Блокирующие проблемы|^Не блокирует$/), null);
+  } finally { slot.lifecycle.unmount(); }
+});
+
 test('non-blocking gate reason and command render independently; dismiss does not hide the report', async () => {
   let data = { ...suggestedData(), items: [{ id: 'aif-commit', command: '$aif-commit', available: true, reason: 'Only non-blocking warnings remain.' }], gateError: null, gate: { schema_version: 1, gate: 'verify', status: 'warn', blocking: false, blockers: [], affected_files: ['src/demo.ts'], suggested_next: { command: '/aif-commit', reason: 'Only non-blocking warnings remain.' } } };
   const slot = renderSlot(banner, {}, { composer: { scope: { kind: 'thread', threadId: 'thr_test' } }, rpc: {
@@ -1354,6 +1380,31 @@ test('«Оценка кнопок» toggles scoring, hides the catalog without e
     await slot.findByText('Gemini ответил HTTP 403');
     fireEvent.click(slot.getByRole('button', { name: 'Удалить ключ' }));
     await waitFor(() => assert.deepEqual(saved[2], { manualKey: null }));
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test('settings check shows the pending state, last provider error and a successful retry', async () => {
+  const tab = app.tabs.find(t => t.id === 'workflow')!;
+  const view = scoringView({ enabled: true, source: 'manual', manualKeySet: true });
+  const denied = 'System One ответил HTTP 403 — Model is not allowed for this API key';
+  let finish!: (value: unknown) => void;
+  const slot = renderSlot(tab as any, { threadId: 'thr_check_score', environment: { id: 'env_score' } }, { rpc: {
+    status: () => data(), delegation: () => delegView(), chipScoring: () => view,
+    checkChipScoring: () => new Promise(resolve => { finish = resolve; }),
+  } });
+  try {
+    fireEvent.click(await slot.findByRole('tab', { name: /Настройки/ }));
+    const section = within(await slot.findByRole('region', { name: 'Оценка кнопок' }));
+    fireEvent.click(await section.findByRole('button', { name: 'Проверить' }));
+    assert((await section.findByRole('button', { name: 'Проверяю…' }) as HTMLButtonElement).disabled);
+    finish({ ...view, lastError: denied, lastRequestAt: Date.now() });
+    await section.findByText(denied);
+    await section.findByText(/Последний запрос/);
+    fireEvent.click(section.getByRole('button', { name: 'Проверить' }));
+    await section.findByRole('button', { name: 'Проверяю…' });
+    finish({ ...view, lastError: null, lastRequestAt: Date.now(), lastScoredAt: Date.now() });
+    await section.findByText('Оценки кнопок получены');
+    assert.equal(section.queryByText(denied), null);
   } finally { slot.lifecycle.unmount(); }
 });
 

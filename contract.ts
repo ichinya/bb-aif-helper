@@ -21,7 +21,7 @@ export const chipScoringViewSchema = z.object({
   connection: systemOneConnectionSchema.nullable(),
   enabled: z.boolean(), source: z.enum(['catalog', 'manual']), catalogName: z.string().nullable(),
   catalogAvailable: z.boolean(), catalogNames: z.array(z.string()), manualKeySet: z.boolean(),
-  lastError: z.string().nullable(), lastScoredAt: z.number().nullable(),
+  lastError: z.string().nullable(), lastScoredAt: z.number().nullable(), lastRequestAt: z.number().nullable().default(null),
 });
 export type ChipScoringView = z.infer<typeof chipScoringViewSchema>;
 const chipScoringInput = z.object({
@@ -73,6 +73,7 @@ export const rpcContract = defineRpcContract({
   chipScoring: { input: z.object({}).strict(), output: chipScoringViewSchema,
     tags: () => [CHIP_SCORING_TAG] },
   setChipScoring: { input: chipScoringInput, output: chipScoringViewSchema },
+  checkChipScoring: { input: z.object({}).strict(), output: chipScoringViewSchema, experimental_retryable: false },
   setReadinessSkip: { input: z.object({ threadId: z.string().min(1).max(200), stepId: z.enum(SKIPPABLE_STEPS), skipped: z.boolean() }).strict(), output: z.object({ ok: z.literal(true) }) },
   runSuggestion: { input: suggestionActionSchema.extend({ fingerprint: z.string().length(64), requestId: z.string().uuid() }), output: dispatchResult.extend({
     command: z.string().optional(),

@@ -15,7 +15,7 @@ import { lockUnchangedChecks, unchangedCheck, unchangedReason } from './check-ac
 import { SnapshotCache } from './snapshot-cache.ts';
 import { AIF_MENTION, aifMentionItems, aifModeInstructions, shouldContribute } from './aif-mode.ts';
 import { versionSampleFresh } from './versions.ts';
-import { DECISIONS_URL, decisionsRequest, decisionsResponseSchema, probabilitiesFor, scoringKey } from './chip-scoring.ts';
+import { DECISIONS_URL, decisionsRequest, decisionsResponseSchema, probabilitiesFor, scoringErrorMessage, scoringKey } from './chip-scoring.ts';
 import { parallelGroups } from './parallel-plan.ts';
 import { CHIP_SCORING_TAG, projectTag, threadTag } from './live-updates.ts';
 import { isBasicPlanPath, nativePlanInput } from './basic-workflow.ts';
@@ -119,7 +119,7 @@ export default async function plugin(bb: BbPluginApi) {
   async function chatChecks(threadId: string, environmentId: string, hostId: string, snapshot: Snapshot, fresh: boolean) {
     if (!snapshot.candidates.length) return;
     const epoch = historyEpochs.get(threadId) ?? 0;
-    const key = JSON.stringify([threadId, environmentId, hostId, snapshot.root, snapshot.candidates.map(c => c.path), epoch]);
+    const key = JSON.stringify([threadId, environmentId, hostId, snapshot.root, snapshot.candidates.map(c => [c.path, c.kind]), epoch]);
     const storageKey = chatStorageKey(threadId, environmentId, hostId, snapshot.root);
     if (!histories.has(key)) histories.set(key, { at: 0, records: await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [] });
     const load = async () => {
@@ -137,7 +137,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (disposed) return;
         const history = await serial(`history:${storageKey}`, async () => {
           const saved = await bb.storage.kv.get<ChatCheck[]>(storageKey) ?? [];
-          const records = [...saved, ...readChatChecks(rows, snapshot.candidates.map(c => c.path))];
+          const records = [...saved, ...readChatChecks(rows, snapshot.candidates)];
           const latest = new Map<string, ChatCheck>();
           for (const record of records) {
             const id = `${record.target}:${record.result.gate}`;
@@ -615,7 +615,10 @@ export default async function plugin(bb: BbPluginApi) {
   async function setChipScoring(input: ChipScoringInput) {
     const state = await scoringState();
     const connection = input.connection === undefined ? state.connection : input.connection;
-    const next: ChipScoringState = { ...state, connection, revision: randomUUID(), lastError: null, lastScoredAt: null,
+    const changingConnection = input.connection !== undefined || input.source !== undefined || input.catalogName !== undefined ||
+      input.manualKey !== undefined || input.customKey !== undefined;
+    const next: ChipScoringState = { ...state, connection, revision: randomUUID(),
+      ...(changingConnection ? { lastError: null, lastScoredAt: null, lastRequestAt: null } : {}),
       enabled: input.enabled ?? state.enabled, source: input.source ?? state.source,
       catalogName: input.catalogName === undefined ? state.catalogName : input.catalogName };
     if (input.customKey && !input.connection) throw new Error('Укажите адрес для ключа System One.');
@@ -653,23 +656,13 @@ export default async function plugin(bb: BbPluginApi) {
       return { error: 'ключ не найден в каталоге' };
     }
   }
-  async function scoreChips(threadId: string, key: string, reply: string, options: { id: string; command: string }[], profile: ChipScoringState) {
-    const started = Date.now();
-    const fail = async (lastError: string, detail: string) => {
-      rememberChipScore(key, {});
-      bb.log.warn(`aif-chat: chip scoring failed threadId=${threadId}: ${detail}`);
-      await serial(CHIP_SCORING_KV, async () => {
-        const state = await scoringState();
-        if (state.revision !== profile.revision) return;
-        await bb.storage.kv.set(CHIP_SCORING_KV, { ...state, lastError });
-      });
-      bb.rpc.experimental_invalidate([CHIP_SCORING_TAG]);
-    };
+  type ScoreOptions = { id: string; command: string }[];
+  type ScoreResult = { probabilities: Record<string, number> } | { error: string; detail: string };
+  async function requestScores(reply: string, options: ScoreOptions, profile: ChipScoringState): Promise<ScoreResult> {
     const resolved = await resolveDecisionsKey(profile);
-    if ('error' in resolved) return fail(resolved.error, resolved.error);
+    if ('error' in resolved) return { error: resolved.error, detail: resolved.error };
     const connection = profile.connection;
     const provider = connection ? 'System One' : 'Gemini';
-    let probabilities: Record<string, number>;
     try {
       const request = decisionsRequest(reply, options);
       const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -678,28 +671,52 @@ export default async function plugin(bb: BbPluginApi) {
       const body = connection ? { model: connection.model, state: request.input, questions: request.questions } : request;
       const response = await fetch(connection?.endpoint ?? DECISIONS_URL, { method: 'POST', headers, redirect: 'error',
         body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
-      if (!response.ok) return fail(`${provider} ответил HTTP ${response.status}`, `HTTP ${response.status}`);
-      const text = await response.text();
-      if (text.length > 1_048_576) return fail(`Неверный ответ ${provider}`, 'response too large');
-      const parsed = decisionsResponseSchema.safeParse(JSON.parse(text));
-      if (!parsed.success || (connection && !options.every(o => parsed.data.answers?.next?.probabilities?.[o.id] !== undefined))) {
-        return fail(`Неверный ответ ${provider}`, 'invalid response');
+      if (!response.ok) {
+        const detail = `HTTP ${response.status}`;
+        const message = await scoringErrorMessage(response, resolved.key);
+        return { error: `${provider} ответил ${detail}${message ? ' — ' + message : ''}`, detail };
       }
-      probabilities = probabilitiesFor(parsed.data, options.map(o => o.id));
+      const text = await response.text();
+      if (text.length > 1_048_576) return { error: `Неверный ответ ${provider}`, detail: 'response too large' };
+      const parsed = decisionsResponseSchema.safeParse(JSON.parse(text));
+      const scores = parsed.success && parsed.data.answers?.next?.probabilities;
+      if (!scores || !options.some(o => scores[o.id] !== undefined) || (connection && !options.every(o => scores[o.id] !== undefined))) {
+        return { error: `Неверный ответ ${provider}: ожидались вероятности для кнопок`, detail: 'invalid response' };
+      }
+      return { probabilities: probabilitiesFor(parsed.data, options.map(o => o.id)) };
     } catch (error) {
       const name = error instanceof Error ? error.name : 'error';
       const lastError = name === 'TimeoutError' || name === 'AbortError' ? `Таймаут ${provider}` : name === 'SyntaxError' ? `Неверный ответ ${provider}` : `${provider} недоступен`;
-      return fail(lastError, name);
+      return { error: lastError, detail: name };
     }
-    rememberChipScore(key, probabilities);
-    bb.rpc.experimental_invalidate([threadTag(threadId), CHIP_SCORING_TAG]);
-    const top = options.reduce((a, b) => (probabilities[b.id] ?? 0) > (probabilities[a.id] ?? 0) ? b : a).id;
-    bb.log.info(`aif-chat: chips scored threadId=${threadId} options=${options.length} top=${top} ms=${Date.now() - started}`);
+  }
+  let lastStart = 0;
+  async function evaluateChips(reply: string, options: ScoreOptions, profile: ChipScoringState) {
+    lastStart = Math.max(Date.now(), lastStart + 1);
+    const started = lastStart;
+    const result = await requestScores(reply, options, profile);
     await serial(CHIP_SCORING_KV, async () => {
       const state = await scoringState();
-      if (state.revision !== profile.revision) return;
-      await bb.storage.kv.set(CHIP_SCORING_KV, { ...state, lastError: null, lastScoredAt: Date.now() });
+      if (state.revision !== profile.revision || (state.lastRequestAt ?? 0) > started) return;
+      await bb.storage.kv.set(CHIP_SCORING_KV, { ...state, lastRequestAt: started,
+        lastError: 'error' in result ? result.error : null, lastScoredAt: 'error' in result ? state.lastScoredAt : Math.max(started, Date.now()) });
     });
+    bb.rpc.experimental_invalidate([CHIP_SCORING_TAG]);
+    return result;
+  }
+  async function scoreChips(threadId: string, key: string, reply: string, options: ScoreOptions, profile: ChipScoringState) {
+    const started = Date.now();
+    const result = await evaluateChips(reply, options, profile);
+    if ('error' in result) {
+      rememberChipScore(key, {});
+      bb.log.warn(`aif-chat: chip scoring failed threadId=${threadId}: ${result.detail}`);
+      return;
+    }
+    const { probabilities } = result;
+    rememberChipScore(key, probabilities);
+    bb.rpc.experimental_invalidate([threadTag(threadId)]);
+    const top = options.reduce((a, b) => (probabilities[b.id] ?? 0) > (probabilities[a.id] ?? 0) ? b : a).id;
+    bb.log.info(`aif-chat: chips scored threadId=${threadId} options=${options.length} top=${top} ms=${Date.now() - started}`);
   }
   async function chipScoringFor(threadId: string, sourceKey: string, reply: string, items: Suggestions['items']) {
     const options = items.filter(item => item.available);
@@ -748,6 +765,12 @@ export default async function plugin(bb: BbPluginApi) {
     setDelegation: input => serial(`delegation:${input.threadId}`, () => setDelegation(input.threadId, input.choice, input.role)),
     setDelegationDefaults: input => serial(`delegation:${input.threadId}`, () => setDelegationDefaults(input.threadId, input.action)),
     chipScoring: () => chipScoringView(),
+    checkChipScoring: async () => {
+      await evaluateChips('Implementation is complete. Verify the changes against the plan.', [
+        { id: 'aif-plan', command: '$aif-plan' }, { id: 'aif-verify', command: '$aif-verify' },
+      ], await scoringState());
+      return chipScoringView();
+    },
     setChipScoring: input => serial('chip-scoring', async () => {
       const view = await setChipScoring(input);
       bb.rpc.experimental_invalidateAll();

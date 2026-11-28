@@ -1,4 +1,4 @@
-import type { Snapshot } from './model.ts';
+import type { GateResult, Snapshot } from './model.ts';
 
 export const rowActions: Record<string, string> = {
   verify: 'check-verify', rules: 'check-rules', security: 'check-security', review: 'check-review',
@@ -30,13 +30,13 @@ export const checkHelp: Readonly<Record<string, string>> = {
   'completion-hook': 'Показывает состояние настроенного хука завершения.',
   coupling: 'Проверяет связи между модулями и места, которые приходится менять вместе.',
 };
-const commands: Record<string, string> = {
+export const checkCommandGates: Readonly<Partial<Record<string, GateResult['gate']>>> = {
   'aif-verify': 'verify', 'aif-rules-check': 'rules', 'aif-security-checklist': 'security', 'aif-review': 'review',
 };
 export const unchangedReason = 'Файлы не изменились с момента фиксации результата этой проверки. Повторный запуск не требуется.';
 export function unchangedCheck(snapshot: Snapshot, skill: string, command = skill) {
   if (/(?:^|\s)\+coupling(?:$|\s)/.test(command)) return false; // A plain review is not proof of a coupling review.
-  return snapshot.checks.some(check => check.id === commands[skill] && check.chat?.freshness === 'unchanged');
+  return snapshot.checks.some(check => check.id === checkCommandGates[skill] && check.chat?.freshness === 'unchanged');
 }
 export function lockUnchangedChecks(snapshot: Snapshot) {
   for (const action of snapshot.actions) {
